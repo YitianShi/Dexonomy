@@ -1,21 +1,23 @@
-import os
-import multiprocessing
-import logging
 import glob
+import logging
+import multiprocessing
+import os
+
 import numpy as np
 from hydra.utils import to_absolute_path
 
-from dexonomy.sim import MuJoCo_EvalEnv, HandCfg, MuJoCo_EvalCfg
-from dexonomy.util.file_util import load_scene_cfg, load_json, safe_wrapper
+from dexonomy.sim import HandCfg, MuJoCo_EvalCfg, MuJoCo_EvalEnv
+from dexonomy.util.file_util import load_json, load_scene_cfg, safe_wrapper
 from dexonomy.util.traj_util import get_planner
 
 
 @safe_wrapper
 def _single_eval(param):
     input_path, cfg = param[0], param[1]
+    in_memory = len(param) > 2
     data_dir = cfg.traj_dir if not cfg.skip_traj else cfg.grasp_dir
     op_cfg, hand_cfg = cfg.op, cfg.hand
-    grasp_data = np.load(input_path, allow_pickle=True).item()
+    grasp_data = param[2] if in_memory else np.load(input_path, allow_pickle=True).item()
     
     if op_cfg.skip_pregrasp:
         # start from grasp pose rather than pre grasp pose
@@ -49,7 +51,7 @@ def _single_eval(param):
             update_relative_path(grasp_data['scene_cfg'])
         scene_cfg = grasp_data['scene_cfg']
     else:
-        scene_cfg = load_scene_cfg(grasp_data["scene_path"])
+        scene_cfg = param[4] if in_memory else load_scene_cfg(grasp_data["scene_path"])
 
     plane_flag = False
     for o_cfg in scene_cfg["scene"].values():
@@ -73,7 +75,7 @@ def _single_eval(param):
                 f"Using an arm but no table is in scene cfg: {grasp_data['scene_path']}"
             )
 
-    sim_env = MuJoCo_EvalEnv(
+    sim_env = param[3] if in_memory and param[3] is not None else MuJoCo_EvalEnv(
         hand_cfg=(
             HandCfg(arm_flag=True, **hand_cfg.arm_hand)
             if not cfg.skip_traj
@@ -86,6 +88,8 @@ def _single_eval(param):
         hard=op_cfg.hard,
     )
 
+    if in_memory:
+        sim_env.reset_qpos(grasp_data["pregrasp_qpos"][0])
     init_obj_pose = np.copy(sim_env.get_active_obj_pose())
     planner = get_planner(scene_cfg["task"])
     ctrl_qpos, ctrl_type, ext_dir, target_obj_pose = planner.plan_trajectory(
@@ -109,6 +113,9 @@ def _single_eval(param):
         op_cfg.trans_thre,
         op_cfg.rot_thre,
     )
+
+    if in_memory:
+        return bool(succ_flag), sim_env
 
     sim_env.save_debug(input_path.replace(data_dir, cfg.debug_dir))
 
@@ -151,6 +158,11 @@ def _single_eval(param):
                 )
 
     return input_path
+
+
+def evaluate_grasp_data(grasp_data, cfg, scene_cfg, sim_env=None):
+    """Run native physical validation while reusing a model within one target."""
+    return _single_eval.__wrapped__((grasp_data["scene_path"], cfg, grasp_data, sim_env, scene_cfg))
 
 
 def operate_eval(cfg):

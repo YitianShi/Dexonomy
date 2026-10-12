@@ -7,7 +7,12 @@ import multiprocessing
 
 from dexonomy.sim import MuJoCo_VisEnv, HandCfg, MuJoCo_OptCfg
 from dexonomy.util.vis_util import get_arrow_mesh, get_line_mesh
-from dexonomy.util.file_util import load_yaml, load_scene_cfg, safe_wrapper
+from dexonomy.util.file_util import (
+    get_template_names,
+    load_yaml,
+    load_scene_cfg,
+    safe_wrapper,
+)
 
 
 @safe_wrapper
@@ -96,7 +101,14 @@ def operate_v3d(cfg):
             raise NotImplementedError(
                 f"Valid choices: 'init', 'grasp', 'succ_grasp', 'succ_traj', 'init_tmpl', 'new_tmpl'. Current: '{op_cfg.data}' "
             )
-        input_path_lst = glob(os.path.join(data_dir, "**/*.npy"), recursive=True)
+        if cfg.tmpl_name is None:
+            input_path_lst = glob(os.path.join(data_dir, "**/*.npy"), recursive=True)
+        else:
+            input_path_lst = []
+            for tmpl_name in get_template_names(cfg.tmpl_name, data_dir):
+                input_path_lst.extend(
+                    glob(os.path.join(data_dir, tmpl_name, "**/*.npy"), recursive=True)
+                )
         if cfg.debug_name is not None:
             input_path_lst = [p for p in input_path_lst if cfg.debug_name in p]
         if check_dir is not None and op_cfg.succ is not None:

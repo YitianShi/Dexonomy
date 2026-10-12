@@ -8,6 +8,7 @@ grasp:
     collision: 
       hh_thre: 0.  # min hand-hand distance for collision-free grasp
       ho_thre: 0.  # min hand-object distance for collision-free grasp
+      scene_thre: 0.  # min hand-distractor/table distance
     contact: 
       thre: 0.002  # max hand-object distance for a valid contact
       check_body: True  # check if the required contact bodies are in contact
@@ -25,5 +26,6 @@ pregrasp:
     collision: 
       hh_thre: 0.0  # min hand-hand distance for collision-free pregrasp
       ho_thre: 0.04  # min hand-object distance for collision-free pregrasp
+      scene_thre: 0.0  # reject penetration into distractors or the table
 
 cust_log_dir: ${log_dir}

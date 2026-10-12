@@ -1,7 +1,11 @@
 __pycache__/
+.ruff_cache/
 *.egg-info
+.envs/
 
-.vscode
+.vscode/*
+!.vscode/launch.json
+!.vscode/settings.json
 *.npy
 
 debug*
@@ -9,3 +13,9 @@ output*
 assets/object
 MUJOCO_LOG.TXT
 task/
+
+# Local dataset archives and extraction markers
+data/*.tar.gz
+data/extracted/
+data/.dexonomy_extracted/
+downloads/

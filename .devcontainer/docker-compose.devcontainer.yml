@@ -1,0 +1,20 @@
+services:
+  dexonomy:
+    user: vscode
+    command: /bin/bash -lc "while sleep 1000; do :; done"
+    environment:
+      HOME: /home/vscode
+      DISPLAY: ${DISPLAY:-:0}
+      XAUTHORITY: /tmp/container.xauth
+      MUJOCO_GL: glfw
+    volumes:
+      - .:/workspace:cached
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - /tmp/dexonomy-devcontainer.xauth:/tmp/container.xauth:ro
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

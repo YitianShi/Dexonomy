@@ -22,6 +22,22 @@ from dexonomy.sim import MuJoCo_VisEnv, HandCfg
 from dexonomy.util.file_util import load_yaml
 
 
+def contact_template_frame(hand_data, contact_index):
+    """Express a fixed template in the frame of one selected hand contact."""
+    qpos = np.asarray(hand_data["grasp_qpos"]).squeeze()
+    h_r = tq.quat2mat(qpos[3:7]).astype(np.float32)
+    h_cpn_h = np_inv_transform_points(hand_data["hand_cpn_w"], h_r, qpos[:3])
+    if not 0 <= contact_index < len(h_cpn_h):
+        raise ValueError(f"Hand contact index out of range: {contact_index}")
+    rotation = np_normal_to_rot(h_cpn_h[contact_index, 3:].reshape(1, 3)).squeeze(0).T
+    translation = -rotation @ h_cpn_h[contact_index, :3]
+    return {
+        "rot_c2h": rotation,
+        "trans_c2h": translation,
+        "hand_cpn_c": np_transform_points(h_cpn_h, rotation, translation),
+    }
+
+
 class HandTemplateLoader:
     def __init__(
         self,
@@ -33,6 +49,7 @@ class HandTemplateLoader:
         max_data_path=100,
         max_data_buffer=1024,
         n_worker=4,
+        enumerate_contacts=False,
     ):
         # Producer components
         self.data_path_list = []
@@ -40,7 +57,8 @@ class HandTemplateLoader:
         self.data_path_condition = threading.Condition(self.data_path_lock)
 
         # Consumer components
-        self.consumer_pool = ThreadPoolExecutor(max_workers=n_worker)
+        self.enumerate_contacts = enumerate_contacts
+        self.consumer_pool = (None if enumerate_contacts else ThreadPoolExecutor(max_workers=n_worker))
 
         # Buffer components
         self.data_buffer = {
@@ -82,6 +100,8 @@ class HandTemplateLoader:
         hand_data = self._load_data(
             vis_env, os.path.join(init_tmpl_dir, tmpl_name + ".npy")
         )
+        self.initial_template = hand_data
+        self.contact_count = len(hand_data["hand_cpn_w"])
         for k in self.data_buffer.keys():
             self.data_buffer[k].append(
                 torch.from_numpy(hand_data[k])
@@ -98,7 +118,7 @@ class HandTemplateLoader:
 
     def start(self):
         """Start all threads in the pipeline"""
-        if self.running:
+        if self.running or self.enumerate_contacts:
             return
 
         self.running = True
@@ -121,7 +141,8 @@ class HandTemplateLoader:
             self.data_path_condition.notify_all()
 
         # Shutdown thread pool
-        self.consumer_pool.shutdown(wait=True)
+        if self.consumer_pool is not None:
+            self.consumer_pool.shutdown(wait=True)
 
         # Wait for producer thread
         if self.producer_thread:
@@ -205,17 +226,22 @@ class HandTemplateLoader:
             + skt_xpos[:, None, :]
         ).reshape(-1, 6)
 
-        h_r = tq.quat2mat(hand_data["grasp_qpos"][3:7]).astype(np.float32)
-        h_t = hand_data["grasp_qpos"][:3]
-        h_cpn_h = np_inv_transform_points(hand_data["hand_cpn_w"], h_r, h_t)
-        init_idx = np.random.randint(low=0, high=len(h_cpn_h))
-        rot_c2h = np_normal_to_rot(h_cpn_h[init_idx, 3:].reshape(1, 3)).squeeze(0).T
-        trans_c2h = -rot_c2h @ h_cpn_h[init_idx, :3]
-        hand_data["rot_c2h"] = rot_c2h
-        hand_data["trans_c2h"] = trans_c2h
-        hand_data["hand_cpn_c"] = np_transform_points(h_cpn_h, rot_c2h, trans_c2h)
+        init_idx = 0 if self.enumerate_contacts else np.random.randint(len(hand_data["hand_cpn_w"]))
+        hand_data.update(contact_template_frame(hand_data, init_idx))
         hand_data["hand_path"] = data_path
         return hand_data
+
+    def get_contact_batched_data(self, contact_index, data_size, device):
+        """Use one deterministic anchor for every object point/roll in a batch."""
+        hand_data = {**self.initial_template,
+                     **contact_template_frame(self.initial_template, contact_index)}
+        result = dict(self.extra_info)
+        for key in self.data_buffer:
+            value = hand_data[key]
+            if isinstance(value, np.ndarray):
+                tensor = torch.from_numpy(value).to(device)
+                result[key] = tensor.expand(*data_size, *tensor.shape)
+        return result
 
     def get_batched_data(self, data_size: torch.Size, device: torch.device):
         """Get processed data from buffer (thread-safe)"""

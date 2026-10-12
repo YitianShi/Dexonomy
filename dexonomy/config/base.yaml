@@ -1,5 +1,5 @@
 # General configurations
-n_worker: 32    
+n_worker: 32  # CPU processes for clutter scene generation and grasp filtering
 skip_done: True   # skip if the result already exists, used for op=init, grasp and eval
 skip_traj: True   # skip trajectory generation and evaluation
 skip_grasp_eval: False  # skip grasp evaluation

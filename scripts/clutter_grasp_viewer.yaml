@@ -1,0 +1,8 @@
+# MuJoCo clutter grasp viewer only. This file never changes generated data.
+
+# Maximum grasps displayed for each target object. FPS is applied independently
+# to every object using the grasp palm position. Set to 0 to display all grasps.
+max_grasps_per_target: 5
+
+# Seed that chooses the first point of farthest-point sampling.
+sample_seed: 12

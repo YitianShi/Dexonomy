@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>GraspNet · 表面采样点</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#f2f5f8;color:#18334a;font:14px system-ui,sans-serif}
+header{padding:25px 28px 18px;background:white;border-bottom:1px solid #dce4eb}h1{font-size:25px;margin:0 0 9px}
+p{color:#526374;margin:8px 0;line-height:1.6}.controls{display:flex;gap:22px;align-items:center;flex-wrap:wrap;margin-top:15px}
+button{border:1px solid #b9cad8;border-radius:6px;background:white;color:#18334a;padding:7px 13px;cursor:pointer}
+main{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:14px;padding:20px}
+article{background:white;border:1px solid #dce4eb;border-radius:10px;overflow:hidden}
+.caption{padding:12px 14px 0;display:flex;justify-content:space-between;align-items:center;gap:6px}.caption strong{font-size:13px}
+.id{font:10px monospace;overflow-wrap:anywhere;padding:0 14px 10px;color:#526374}
+canvas{display:block;width:100%;height:260px;cursor:grab;touch-action:none}canvas:active{cursor:grabbing}
+.count{padding:0 14px 12px;color:#526374;font-size:12px}dialog{border:none;border-radius:12px;width:min(950px,95vw);padding:18px}
+dialog::backdrop{background:#14263899}dialog canvas{height:min(65vh,650px)}.dialog-head{display:flex;justify-content:space-between;align-items:center;gap:15px}
+@media(max-width:1250px){main{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media(max-width:700px){main{grid-template-columns:repeat(2,minmax(0,1fr));padding:10px;gap:10px}canvas{height:230px}header{padding:20px}}
+@media(max-width:420px){main{grid-template-columns:1fr}}
+</style>
+<header><h1 id="heading"></h1><p id="subtitle"></p>
+<p>拖动旋转，滚轮或双指缩放；点击“放大”查看单个物体。金色为采样点，蓝色为半透明网格，绿色为外法线。采样点绘制在网格上方，便于查看全部点。</p>
+<div class="controls"><label><input id="mesh" type="checkbox" checked> 显示网格</label><label><input id="normals" type="checkbox"> 显示外法线</label><button id="reset">重置视角</button></div>
+</header><main id="grid"></main>
+<dialog id="detail"><div class="dialog-head"><strong id="detail-title"></strong><button id="close">关闭</button></div><canvas id="detail-canvas"></canvas><p id="detail-info"></p></dialog>
+<script id="data" type="application/json">__PAYLOAD__</script>
+<script>
+const data=JSON.parse(document.getElementById('data').textContent), views=[];
+const options={mesh:true,normals:false};
+document.getElementById('heading').textContent=`${data.dataset} · ${data.objects.length} 个物体 × ${data.point_count} 个采样点`;
+document.getElementById('subtitle').textContent=`从 ${data.catalog_count} 个不同物体中随机抽取，种子 ${data.seed}。保留原始实际尺寸。原生 Dexonomy 表面采样：近似均匀采样，数量不足时随机补足。坐标单位：米。`;
+class View {
+  constructor(canvas,object){this.canvas=canvas;this.object=object;this.active=true;this.reset();this.bind();new ResizeObserver(()=>this.draw()).observe(canvas);}
+  reset(){this.yaw=135*Math.PI/180;this.elevation=24*Math.PI/180;this.zoom=1;this.draw();}
+  bind(){const c=this.canvas,pointers=new Map();let pinchDistance=0;
+    c.addEventListener('pointerdown',e=>{c.setPointerCapture(e.pointerId);pointers.set(e.pointerId,[e.clientX,e.clientY]);pinchDistance=0;});
+    c.addEventListener('pointermove',e=>{if(!pointers.has(e.pointerId))return;const previous=pointers.get(e.pointerId);pointers.set(e.pointerId,[e.clientX,e.clientY]);
+      if(pointers.size===1){this.yaw-=(e.clientX-previous[0])*0.009;this.elevation=Math.max(-Math.PI/2+.01,Math.min(Math.PI/2-.01,this.elevation+(e.clientY-previous[1])*0.009));}
+      else{const p=[...pointers.values()],distance=Math.hypot(p[0][0]-p[1][0],p[0][1]-p[1][1]);if(pinchDistance>0)this.zoom=Math.max(.35,Math.min(5,this.zoom*distance/pinchDistance));pinchDistance=distance;}this.draw();});
+    for(const event of ['pointerup','pointercancel','lostpointercapture'])c.addEventListener(event,e=>{pointers.delete(e.pointerId);pinchDistance=0;});
+    c.addEventListener('wheel',e=>{e.preventDefault();this.zoom=Math.max(.35,Math.min(5,this.zoom*Math.exp(-e.deltaY*.0015)));this.draw();},{passive:false});
+  }
+  draw(){if(!this.active||!this.object)return;const c=this.canvas,w=c.clientWidth,h=c.clientHeight;if(!w||!h)return;
+    const dpr=Math.min(window.devicePixelRatio||1,2);c.width=Math.round(w*dpr);c.height=Math.round(h*dpr);
+    const ctx=c.getContext('2d');ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,w,h);
+    const o=this.object,cy=Math.cos(this.yaw),sy=Math.sin(this.yaw),ce=Math.cos(this.elevation),se=Math.sin(this.elevation),scale=Math.min(w,h)*.78*this.zoom/o.span;
+    const project=v=>{const x=v[0]-o.center[0],y=v[1]-o.center[1],z=v[2]-o.center[2],forward=cy*x+sy*y;
+      return [w/2+(-sy*x+cy*y)*scale,h/2-(-se*forward+ce*z)*scale,ce*forward+se*z];};
+    if(options.mesh){const vertices=o.vertices.map(project),faces=o.faces.map(f=>[f,(vertices[f[0]][2]+vertices[f[1]][2]+vertices[f[2]][2])/3]).sort((a,b)=>a[1]-b[1]);
+      ctx.fillStyle='rgba(66,131,181,0.11)';for(const [f]of faces){ctx.beginPath();ctx.moveTo(...vertices[f[0]].slice(0,2));ctx.lineTo(...vertices[f[1]].slice(0,2));ctx.lineTo(...vertices[f[2]].slice(0,2));ctx.closePath();ctx.fill();}}
+    if(options.normals){ctx.strokeStyle='#32976a';ctx.lineWidth=1;for(let i=0;i<o.points.length;i++){const p=o.points[i],end=p.map((v,j)=>v+o.normals[i][j]*o.span*.07),a=project(p),b=project(end);ctx.beginPath();ctx.moveTo(a[0],a[1]);ctx.lineTo(b[0],b[1]);ctx.stroke();}}
+    const points=o.points.map((p,i)=>({p:project(p),i})).sort((a,b)=>a.p[2]-b.p[2]);ctx.fillStyle='#f5a623';ctx.strokeStyle='#75470b';ctx.lineWidth=.65;
+    for(const {p}of points){ctx.beginPath();ctx.arc(p[0],p[1],2.9,0,2*Math.PI);ctx.fill();ctx.stroke();}
+
+  }
+}
+const dialog=document.getElementById('detail'),large=new View(document.getElementById('detail-canvas'),null);large.active=false;
+data.objects.forEach((object,i)=>{const card=document.createElement('article'),caption=document.createElement('div');caption.className='caption';
+  const title=document.createElement('strong');title.textContent=`${String(i+1).padStart(2,'0')} · ${object.id.slice(0,12)}`;
+  const button=document.createElement('button');button.textContent='放大';button.addEventListener('click',()=>{large.object=object;large.active=true;document.getElementById('detail-title').textContent=object.id;
+    document.getElementById('detail-info').textContent=`${object.points.length} 个表面采样点 · 采样种子 ${object.seed} · 配置 ${object.scale_name} · 网格与点使用同一真实尺度`;dialog.showModal();large.reset();});
+  caption.append(title,button);const canvas=document.createElement('canvas'),id=document.createElement('div');id.className='id';id.textContent=object.id;
+  const count=document.createElement('div');count.className='count';count.textContent=`${object.points.length} 点 · 跨度 ${(object.span*100).toFixed(1)} cm`;
+  card.append(caption,canvas,count,id);document.getElementById('grid').append(card);views.push(new View(canvas,object));});
+document.getElementById('close').addEventListener('click',()=>dialog.close());dialog.addEventListener('close',()=>large.active=false);
+for(const name of ['mesh','normals'])document.getElementById(name).addEventListener('change',e=>{options[name]=e.target.checked;[...views,large].forEach(v=>v.draw());});
+document.getElementById('reset').addEventListener('click',()=>[...views,large].forEach(v=>v.reset()));
+</script></html>

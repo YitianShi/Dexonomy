@@ -6,20 +6,26 @@ import traceback
 import hydra
 from omegaconf import DictConfig
 import numpy as np
-import torch
 
-from dexonomy.op import *
+import dexonomy.op as operations
 
 seed = 12
-np.random.seed(seed)
-torch.manual_seed(seed)
-random.seed(seed)
 
 
 @hydra.main(config_path="config", config_name="base", version_base=None)
 def main(cfg: DictConfig):
     try:
-        eval(f"operate_{cfg.op_name}")(cfg)
+        # Clutter generation is CPU-only; spawned workers also import this entrypoint.
+        if cfg.op_name != "clutter":
+            import torch
+
+        np.random.seed(seed)
+        if cfg.op_name != "clutter":
+            torch.manual_seed(seed)
+        random.seed(seed)
+        # PyOpenGL emits harmless INFO messages in headless MuJoCo processes.
+        logging.getLogger("OpenGL").setLevel(logging.WARNING)
+        getattr(operations, f"operate_{cfg.op_name}")(cfg)
     except Exception as e:
         error_traceback = traceback.format_exc()
         logging.info(f"{error_traceback}")

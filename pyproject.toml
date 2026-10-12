@@ -30,3 +30,25 @@ dexkill = "dexonomy.kill:main"
 dexrun = "dexonomy.main:main"     # Single-operation runner
 dexsyn = "dexonomy.script:main"  # Full pipeline runner
 dexsyn_admm = "dexonomy.script_admm:main"  # Full pipeline runner
+
+[tool.ruff]
+extend-exclude = ["assets", "data", "downloads", "output*", "third_party", ".envs"]
+
+[tool.ruff.lint]
+# Check correctness without marking whole import blocks for style-only sorting.
+select = ["E9", "F"]
+
+[tool.pyright]
+include = ["dexonomy", "scripts", "tests"]
+exclude = [
+    "**/__pycache__",
+    "**/node_modules",
+    "**/.*",
+    "assets",
+    "data",
+    "downloads",
+    "output*",
+    "third_party",
+    ".envs",
+]
+extraPaths = ["."]

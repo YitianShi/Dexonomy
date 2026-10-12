@@ -16,38 +16,65 @@ class GraspFilter:
         self.cfg = cfg
         self.sim_env = sim_env
         self.log_name = log_name
+        self.failure_reason = None
 
     def forward(self, info: dict) -> tuple[bool, dict]:
+        self.failure_reason = None
         contact_thre = self.cfg.contact.thre if "contact" in self.cfg else None
-        ho_c, hh_c = self.sim_env.get_contacts(contact_thre)
+        ho_c, scene_c, hh_c = self.sim_env.get_scene_contacts(contact_thre)
         if "limit" in self.cfg and self.cfg.limit and not self._limit_filter():
+            self.failure_reason = "joint_limit"
             return False, ho_c
         if "collision" in self.cfg and self.cfg.collision:
-            if not self._collision_filter(ho_c, hh_c):
+            if not self._collision_filter(ho_c, hh_c, scene_c):
                 return False, ho_c
         if "contact" in self.cfg and self.cfg.contact:
             if not self._contact_filter(ho_c, info["required_cbody"]):
+                self.failure_reason = "required_contact"
                 return False, ho_c
         if "qp" in self.cfg and self.cfg.qp:
             if not self._qp_filter(ho_c, info["ext_wrench"], info["ext_center"]):
+                self.failure_reason = "force_closure"
                 return False, ho_c
         return True, ho_c
 
     def early_stop(self) -> bool:
         contact_thre = self.cfg.contact.thre if "contact" in self.cfg else None
-        ho_c, hh_c = self.sim_env.get_contacts(contact_thre)
-        return self._collision_filter(ho_c, hh_c, slience=True)
+        ho_c, scene_c, hh_c = self.sim_env.get_scene_contacts(contact_thre)
+        return self._collision_filter(ho_c, hh_c, scene_c, slience=True)
 
-    def _collision_filter(self, ho_c: dict, hh_c: dict, slience: bool = False) -> bool:
+    def _collision_filter(
+        self,
+        ho_c: dict,
+        hh_c: dict,
+        scene_c: dict | None = None,
+        slience: bool = False,
+    ) -> bool:
         col_cfg = self.cfg.collision
         if len(hh_c["dist"]) > 0 and min(hh_c["dist"]) < col_cfg.hh_thre:
+            self.failure_reason = "self_collision"
             if not slience:
                 logging.debug(f"{self.log_name} collision hh {min(hh_c['dist'])}")
             return False
 
         if len(ho_c["dist"]) > 0 and min(ho_c["dist"]) < col_cfg.ho_thre:
+            self.failure_reason = "target_penetration"
             if not slience:
                 logging.debug(f"{self.log_name} collision ho {min(ho_c['dist'])}")
+            return False
+
+        scene_thre = getattr(col_cfg, "scene_thre", 0.0)
+        if (
+            scene_c is not None
+            and len(scene_c["dist"]) > 0
+            and min(scene_c["dist"]) < scene_thre
+        ):
+            self.failure_reason = "scene_collision"
+            if not slience:
+                logging.debug(
+                    f"{self.log_name} collision with scene "
+                    f"{min(scene_c['dist'])}: {scene_c['bn2']}"
+                )
             return False
         return True
 
@@ -84,6 +111,7 @@ class GraspFilter:
 @safe_wrapper
 def _single_grasp(param):
     input_path, cfg = param[0], param[1]
+    in_memory = len(param) > 2
     grasp_path = input_path.replace(cfg.init_dir, cfg.grasp_dir)
     if cfg.legacy_api:
         parts = grasp_path.split('/')
@@ -96,7 +124,7 @@ def _single_grasp(param):
     grasp_cfg, pregrasp_cfg = cfg.op.grasp, cfg.op.pregrasp
     debug_path = input_path.replace(cfg.init_dir, cfg.debug_dir)
 
-    grasp_data = np.load(input_path, allow_pickle=True).item()
+    grasp_data = param[2] if in_memory else np.load(input_path, allow_pickle=True).item()
     if cfg.legacy_api:
         key_map = {"evolution_num": "n_evo",
                   "hand_type": "hand_name",
@@ -133,8 +161,8 @@ def _single_grasp(param):
             grasp_data['ext_wrench'] = np.zeros(6)
         scene_cfg = grasp_data['scene_cfg']
     else:
-        scene_cfg = load_scene_cfg(grasp_data["scene_path"])
-    sim_env = MuJoCo_OptEnv(
+        scene_cfg = None if in_memory and param[3] is not None else load_scene_cfg(grasp_data["scene_path"])
+    sim_env = param[3] if in_memory and param[3] is not None else MuJoCo_OptEnv(
         hand_cfg=HandCfg(xml_path=cfg.hand.xml_path, freejoint=True),
         scene_cfg=scene_cfg,
         sim_cfg=MuJoCo_OptCfg(obj_margin=pregrasp_cfg.cdist),
@@ -169,6 +197,8 @@ def _single_grasp(param):
     grasp_data["ho_c"] = ho_c
     if not succ_flag:
         sim_env.save_debug(debug_path)
+        if in_memory:
+            return grasp_data, False, "grasp_" + grasp_filter.failure_reason
         return input_path
 
     # Generate squeeze qpos
@@ -214,20 +244,29 @@ def _single_grasp(param):
                 if pregrasp_filter.early_stop():
                     break
 
+        pregrasp_qpos = np.stack(pregrasp_lst, axis=0)[::-n_interval]
+        grasp_data["pregrasp_qpos"] = np_array32(pregrasp_qpos)
         succ_flag, _ = pregrasp_filter.forward(None)
         if not succ_flag:
             sim_env.save_debug(debug_path)
+            if in_memory:
+                return grasp_data, False, "pregrasp_" + pregrasp_filter.failure_reason
             return input_path
 
-        pregrasp_qpos = np.stack(pregrasp_lst, axis=0)[::-n_interval]
-        grasp_data["pregrasp_qpos"] = np_array32(pregrasp_qpos)
-
     sim_env.save_debug(debug_path)
+    if in_memory:
+        grasp_data["n_evo"] += 1
+        return grasp_data, True, "optimized"
     os.makedirs(os.path.dirname(grasp_path), exist_ok=True)
     grasp_data["n_evo"] += 1
     np.save(grasp_path, grasp_data)
     logging.debug(f"save to {grasp_path}")
     return input_path
+
+
+def optimize_grasp_data(grasp_data, cfg, sim_env):
+    """Use the native optimizer without creating one file or model per seed."""
+    return _single_grasp.__wrapped__((grasp_data["scene_path"], cfg, grasp_data, sim_env))
 
 
 def operate_grasp(cfg: dict):

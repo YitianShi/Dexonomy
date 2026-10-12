@@ -1,0 +1,119 @@
+# MuJoCo-only clutter scene synthesis and grasp transfer/filtering.
+stage: all  # all: generate/reuse each scene, immediately filter, rebuild if zero grasps
+seed: 72  # null selects a fresh seed per run; the resolved seed is saved in the manifest
+manifest_path: ${save_dir}/clutter/manifest.json
+
+scene:
+  # Each root n_worker process runs a complete scene generation/filter loop.
+  # Viewer mode uses one process; stage=scene generates without filtering.
+  source_scene_dir: ${asset_root}/object/DGN_5k/scene_cfg
+  source_cfg_glob: ${op.scene.source_scene_dir}/**/floating/*.npy
+  output_dir: ${save_dir}/clutter/scene_cfg
+  start_index: 0
+  # Generate scene_000000 through scene_004999; rejected candidates are resampled
+  # under the same ID, so table penetration or zero grasps do not leave gaps.
+  # Existing scenes go straight to filtering in all/filter stages.
+  num_scenes: 5000
+  objects_min: 4
+  objects_max: 8
+  targets_per_scene: 0  # 0 means every object is emitted as a target
+  min_extent: 0.03
+  max_extent: 0.14
+  # Select each object's physical scale from a real released grasp, so the
+  # generated scene always has at least one scale-compatible source candidate.
+  sample_dataset_scales: true
+  grasp_scale_dir: ${op.filter.source_grasp_dir}
+  grasp_scale_taxonomies: ${op.filter.taxonomies}
+  catalog_limit: 0
+  skip_existing: true  # stage=scene only; all/filter always re-filter existing IDs
+  max_scene_attempts: 30
+  max_spawn_attempts: 10
+
+  # Defaults follow vmf-contact2's drop-and-settle protocol where applicable.
+  timestep: 0.002
+  table_size: [0.4, 0.4]
+  table_height: 0.0
+  table_thickness: 0.04
+  friction: 0.8
+  # Very high tabletop sliding friction plus MuJoCo's no-slip solver.
+  table_friction: 1000.0
+  impratio: 10.0
+  noslip_iterations: 3
+  object_mass: 0.1
+  spawn_z: [0.18, 0.35]
+  # Spread drops across the full tabletop to reduce central clustering.
+  # Object-size margins still keep spawn positions in bounds.
+  spawn_xy_scale: 1.0
+  spawn_gap: 0.02
+  spawn_position_attempts: 100
+  # Match vmf-contact2: after every physics step, clamp only the magnitude of
+  # each object's linear velocity to 0.5 m/s while preserving its direction.
+  # Set <= 0 to disable the clamp.
+  max_object_speed: 0.5
+  freejoint_damping: 0.001
+  # Temporary invisible walls are used only for drop-and-settle; they are not
+  # written into the released scene config.
+  containment_walls: true
+  containment_height: 0.6
+  containment_thickness: 0.02
+  # Lower bounds protect thin COACD pieces from near-singular dynamics.
+  bound_mass: 0.0001
+  bound_inertia: 0.000001
+  # Interactive generation viewer (requires X11 and MUJOCO_GL=glfw).
+  debug_view: false
+  debug_realtime: true
+  debug_spawn_pause: 0.5
+  debug_result_pause: 1.0
+  settle_timeout: 15.0
+  stable_time: 0.5
+  linear_velocity: 0.02  # all objects must stay below 0.1 mm/s for stable_time
+  # vmf-contact2 uses only linear velocity for its stable-scene gate.
+  # Set > 0 to additionally require an angular-speed threshold.
+  angular_velocity: 0.0
+  penetration_tolerance: 0.0001
+  # Reject settled table penetration beyond 1 mm or an object below the table;
+  # resample objects, scales and spawn poses while keeping this scene ID.
+  table_penetration_tolerance: 0.001
+
+filter:
+  scene_cfg_glob: ${op.scene.output_dir}/**/*.npy
+  source_scene_dir: ${op.scene.source_scene_dir}
+  source_grasp_dir: data/extracted/Dexonomy_GRASP_shadow/succ_collect
+  single_object_library: false  # true: look up reusable library entries by target object ID
+  output_dir: ${save_dir}/clutter/filtered_grasps
+  hand_xml: ${hand.xml_path}
+  taxonomies: null  # process every taxonomy in source_grasp_dir
+  # Pre-filter cap for each target/taxonomy; 0 evaluates every candidate.
+  max_per_target: 0
+  # scene_scale is a per-grasp multiplier of its source scene object scale.
+  # Pool the same object's source scale variants, then compare each grasp's
+  # effective physical scale against the fixed scale in the clutter scene.
+  pool_scale_variants: true
+  scene_scale_tolerance: 0.02
+  approach_steps: 8
+  # Do not reject a grasp solely because its released floating-scene pregrasp
+  # starts in collision. The subsequent approach samples are still checked.
+  check_pregrasp: false
+  contact_margin: 0.0
+  scene_threshold: 0.0
+  reject_self_collision: true
+  self_threshold: 0.0
+  require_target_contact: true
+  target_contact_margin: 0.002
+  # Reject target penetration along pregrasp -> grasp. Squeeze is exempt because
+  # it is an actuator command and may geometrically close inside the static mesh.
+  target_penetration_threshold: -0.001
+
+  # Re-enact squeeze-and-lift in MuJoCo after geometric scene filtering.
+  lift:
+    enabled: false
+    friction: [0.2, 0.001]
+    object_mass: 0.1
+    height: 0.12
+    success_height: 0.05
+    steps: 20
+    substeps: 5
+    settle_substeps: 50
+    hold_substeps: 50
+
+cust_log_dir: ${log_dir}

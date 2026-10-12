@@ -1,0 +1,37 @@
+x-dexonomy-common: &dexonomy-common
+  build:
+    context: .
+    dockerfile: Dockerfile
+  image: dexonomy-runtime:local
+  working_dir: /workspace
+  stdin_open: true
+  tty: true
+  user: "${LOCAL_UID:-1000}:${LOCAL_GID:-1000}"
+  environment:
+    HOME: /tmp
+    MUJOCO_GL: egl
+  volumes:
+    - ./assets:/workspace/assets
+    - ./data:/workspace/data:ro
+    - ./output:/workspace/output
+  shm_size: "8gb"
+
+services:
+  dexonomy:
+    <<: *dexonomy-common
+
+  dexonomy-gpu:
+    <<: *dexonomy-common
+    profiles: ["compute"]
+    environment:
+      HOME: /tmp
+      MUJOCO_GL: egl
+      NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-all}
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility,graphics
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

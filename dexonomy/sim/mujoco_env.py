@@ -7,7 +7,6 @@ import imageio
 import trimesh
 import numpy as np
 import mujoco
-import mujoco.viewer
 
 from dexonomy.util.np_util import (
     np_interp_slide,
@@ -60,12 +59,38 @@ class MuJoCo_BaseEnv:
             self._obj_init_qpos = np_array32(self._obj_init_qpos)
 
         self._set_friction(self._cfg.miu_coef)
+        if scene_cfg is not None:
+            # Honor per-plane friction after the environment's global defaults.
+            for obj_name, obj_cfg in scene_cfg["scene"].items():
+                if obj_cfg["type"] == "plane" and "friction" in obj_cfg:
+                    geom = self._spec.geom(
+                        self._cfg.plane_prefix + obj_name + "_collision"
+                    )
+                    geom.friction[:] = obj_cfg["friction"]
         self._spec.add_key()
 
         # Get ready for simulation
         self._model = self._spec.compile()
         self._data = mujoco.MjData(self._model)
         self.reset_qpos(self.get_hand_qpos(), set_ctrl=False)
+
+        # Body ids are not guaranteed to stay contiguous after MjSpec attachments.
+        # Keep explicit sets so clutter-scene contacts can be classified reliably.
+        self._hand_body_ids = {
+            body_id
+            for body_id in range(1, self._model.nbody)
+            if self._model.body(body_id).name.startswith(self._cfg.hand_prefix)
+        }
+        self._object_body_ids = {
+            body_id
+            for body_id in range(1, self._model.nbody)
+            if self._model.body(body_id).name.startswith(self._cfg.obj_prefix)
+        }
+        self._object_geom_ids = np.asarray([
+            geom_id for geom_id in range(self._model.ngeom)
+            if self._model.geom(geom_id).name.startswith(self._cfg.obj_prefix)
+        ], dtype=np.int32)
+        self._target_body_ids = set()
 
         # Post-processing for object
         if scene_cfg is not None:
@@ -79,6 +104,13 @@ class MuJoCo_BaseEnv:
             self._obj_active_bodyid = self._model.body(
                 self._cfg.obj_prefix + obj_active_name
             ).id
+            for body_id in self._object_body_ids:
+                parent_id = body_id
+                while parent_id != 0:
+                    if parent_id == self._obj_active_bodyid:
+                        self._target_body_ids.add(body_id)
+                        break
+                    parent_id = self._model.body_parentid[parent_id]
 
         # For general ctrl
         self._hand_qpos2ctrl_mat = np.zeros((self._model.nu, self._model.nv))
@@ -111,7 +143,9 @@ class MuJoCo_BaseEnv:
                 f.write(self._spec.to_xml())
 
         if debug_view:
-            self._debug_view = mujoco.viewer.launch_passive(self._model, self._data)
+            from mujoco import viewer as mujoco_viewer
+
+            self._debug_view = mujoco_viewer.launch_passive(self._model, self._data)
             self._debug_view.sync()
             time.sleep(5.0)
 
@@ -432,12 +466,87 @@ class MuJoCo_BaseEnv:
             self.set_obj_margin(self._cfg.obj_margin, temporal=True)
         return ho_contact, hh_contact
 
+    @staticmethod
+    def _empty_contact() -> dict:
+        return {"dist": [], "pos": [], "normal": [], "bn1": [], "bn2": []}
+
+    def get_scene_contacts(self, obj_margin=None) -> tuple[dict, dict, dict]:
+        """Split hand contacts into target, scene-obstacle, and self contacts.
+
+        ``get_contacts`` predates clutter support and combines contacts with every
+        rigid object while omitting the table because its geom belongs to the
+        world body.  For a clutter scene that can turn a distractor collision
+        into a false target contact.  This method uses the attached body names
+        and the active-object subtree to keep those cases separate.
+
+        Returns:
+            target_contact: contacts from the hand to the task target.
+            obstacle_contact: contacts from the hand to distractors or world
+                geoms (including the table/plane).
+            hh_contact: hand self-collisions.
+        """
+        if obj_margin is not None:
+            self.set_obj_margin(obj_margin, temporal=True)
+            mujoco.mj_forward(self._model, self._data)
+
+        target_contact = self._empty_contact()
+        obstacle_contact = self._empty_contact()
+        hh_contact = self._empty_contact()
+
+        for contact in self._data.contact:
+            geom1 = self._model.geom(contact.geom1)
+            geom2 = self._model.geom(contact.geom2)
+            body1_id = int(geom1.bodyid[0])
+            body2_id = int(geom2.bodyid[0])
+            body1_name = self._model.body(body1_id).name
+            body2_name = self._model.body(body2_id).name
+            body1_hand = body1_id in self._hand_body_ids
+            body2_hand = body2_id in self._hand_body_ids
+
+            if body1_hand and body2_hand:
+                hh_contact["dist"].append(contact.dist)
+                hh_contact["pos"].append(contact.pos)
+                hh_contact["normal"].append(contact.frame[0:3])
+                hh_contact["bn1"].append(body1_name)
+                hh_contact["bn2"].append(body2_name)
+                continue
+
+            if body1_hand == body2_hand:
+                continue
+
+            if body1_hand:
+                hand_name, other_name = body1_name, body2_name
+                other_body_id = body2_id
+                contact_normal = contact.frame[0:3]
+            else:
+                hand_name, other_name = body2_name, body1_name
+                other_body_id = body1_id
+                contact_normal = -contact.frame[0:3]
+
+            output = (
+                target_contact
+                if other_body_id in self._target_body_ids
+                else obstacle_contact
+            )
+            output["dist"].append(contact.dist)
+            output["pos"].append(contact.pos - contact.dist * contact_normal)
+            output["normal"].append(contact_normal)
+            output["bn1"].append(hand_name.removeprefix(self._cfg.hand_prefix))
+            output["bn2"].append(other_name)
+
+        for output in (target_contact, obstacle_contact, hh_contact):
+            for key, value in output.items():
+                if "bn" not in key:
+                    output[key] = np_array32(value)
+
+        if obj_margin is not None:
+            self.set_obj_margin(self._cfg.obj_margin, temporal=True)
+        return target_contact, obstacle_contact, hh_contact
+
     def set_obj_margin(self, obj_margin, temporal=False) -> None:
         if not temporal:
             self._cfg.obj_margin = obj_margin
-        for i in range(self._model.ngeom):
-            if self._model.geom(i).name.startswith(self._cfg.obj_prefix):
-                self._model.geom_margin[i] = obj_margin
+        self._model.geom_margin[self._object_geom_ids] = obj_margin
         return
 
     def reset_qpos(self, hand_qpos, set_ctrl=True) -> None:
@@ -482,8 +591,8 @@ class MuJoCo_BaseEnv:
         return np.stack(real_state_qpos, axis=0), np.stack(real_ctrl_qpos, axis=0)
 
     def step_sim(self, substep) -> None:
-        for _ in range(substep):
-            mujoco.mj_step(self._model, self._data)
+        # MuJoCo repeats the same steps in C, avoiding one Python call per step.
+        mujoco.mj_step(self._model, self._data, nstep=substep)
 
         if self._debug_render is not None:
             self._debug_render.update_scene(self._data, "closeup", self._debug_option)

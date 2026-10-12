@@ -1,0 +1,129 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "debugpy",
+      "request": "launch",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "subProcess": false,
+      "env": {
+        "MUJOCO_GL": "egl",
+        "PYTHONPATH": "${workspaceFolder}",
+        "OPENBLAS_NUM_THREADS": "1",
+        "OMP_NUM_THREADS": "1",
+        "MKL_NUM_THREADS": "1"
+      },
+      "name": "1. GraspNet：单物体抓取生成与验证",
+      "program": "${workspaceFolder}/scripts/generate_graspnet_single_object_grasps.py",
+      "args": [
+        "--object",
+        "${input:graspnetObjectName}",
+        "--epochs",
+        "1",
+        "--points",
+        "128",
+        "--inplane",
+        "8",
+        "--gpu",
+        "2",
+        "--workers",
+        "84",
+        "--no-keep-failed",
+        "--all-hand-contacts"
+      ]
+    },
+    {
+      "type": "debugpy",
+      "request": "launch",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "subProcess": false,
+      "env": {
+        "MUJOCO_GL": "egl",
+        "PYTHONPATH": "${workspaceFolder}",
+        "OPENBLAS_NUM_THREADS": "1",
+        "OMP_NUM_THREADS": "1",
+        "MKL_NUM_THREADS": "1"
+      },
+      "name": "2. DexGraspNet：单物体抓取生成与验证",
+      "program": "${workspaceFolder}/scripts/generate_dexgraspnet_single_object_grasps.py",
+      "args": [
+        "--object",
+        "${input:dgnObjectName}",
+        "--epochs",
+        "1",
+        "--points",
+        "128",
+        "--inplane",
+        "8",
+        "--gpu",
+        "2",
+        "--workers",
+        "84",
+        "--no-keep-failed",
+        "--all-hand-contacts"
+      ]
+    },
+    {
+      "type": "debugpy",
+      "request": "launch",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "subProcess": false,
+      "env": {
+        "MUJOCO_GL": "egl",
+        "PYTHONPATH": "${workspaceFolder}",
+        "OPENBLAS_NUM_THREADS": "1",
+        "OMP_NUM_THREADS": "1",
+        "MKL_NUM_THREADS": "1"
+      },
+      "name": "GraspNet：下载并接入全部 88 个物体",
+      "program": "${workspaceFolder}/scripts/prepare_graspnet_objects.py",
+      "args": [
+        "--download"
+      ]
+    },
+    {
+      "name": "MuJoCo: View native surface sample points",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/scripts/view_native_sample_points.py",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "env": {
+        "MUJOCO_GL": "glfw",
+        "PYTHONPATH": "${workspaceFolder}"
+      },
+      "args": [
+        "--sampling",
+        "${input:nativeSamplingFile}",
+        "--view"
+      ]
+    }
+  ],
+  "inputs": [
+    {
+      "id": "dgnObjectName",
+      "type": "promptString",
+      "description": "DexGraspNet 物体完整 ID；默认一个物体的全部原有尺度，输入 * 遍历全部物体",
+      "default": "core_bottle_1071fa4cddb2da2fc8724d5673a063a6"
+    },
+    {
+      "id": "graspnetObjectName",
+      "type": "promptString",
+      "description": "GraspNet 物体编号 000–087；默认单个物体，输入 * 遍历全部 88 个物体",
+      "default": "000"
+    },
+    {
+      "id": "nativeSamplingFile",
+      "type": "promptString",
+      "description": "单物体抓取库 sampling 目录中的 epoch_*.npz 文件",
+      "default": ""
+    }
+  ]
+}
