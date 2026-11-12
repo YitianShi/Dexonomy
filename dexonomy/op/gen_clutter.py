@@ -951,6 +951,7 @@ def _scene_scale_multiplier(source_data: dict, index: int, total_count: int) -> 
 
 
 def _filter_scene(scene_path: str, cfg) -> list[dict]:
+    from dexonomy.op.native_clutter_batch import atomic_npy
     from dexonomy.sim import HandCfg, MuJoCo_EvalCfg, MuJoCo_EvalEnv, MuJoCo_OptCfg, MuJoCo_OptEnv
 
     scene_path = os.path.abspath(scene_path)
@@ -1036,6 +1037,12 @@ def _filter_scene(scene_path: str, cfg) -> list[dict]:
             if target_name not in variant_scene["scene"]:
                 invalid_paths.append(str(variant_path))
                 continue
+            phase_arrays = {key: np.atleast_2d(np.asarray(source_data[key])) for key in required}
+            shapes = [array.shape for array in phase_arrays.values()]
+            if (any(array.ndim != 2 or array.shape[1] < 7
+                    or not np.isfinite(array).all() for array in phase_arrays.values())
+                    or len(set(shapes)) != 1):
+                raise ValueError(f"Invalid or mismatched grasp phase arrays: {variant_path}: {shapes}")
             old_obj_cfg = variant_scene["scene"][target_name]
             old_obj_pose = np.asarray(old_obj_cfg["pose"], dtype=np.float32)
             old_obj_scale = np.asarray(old_obj_cfg["scale"], dtype=np.float64)
@@ -1043,7 +1050,7 @@ def _filter_scene(scene_path: str, cfg) -> list[dict]:
                 key: _transform_qposes(source_data[key], old_obj_pose, new_obj_pose)
                 for key in required
             }
-            variant_count = min(len(transformed[key]) for key in required)
+            variant_count = len(transformed["grasp_qpos"])
             total_count += variant_count
             for index in range(variant_count):
                 try:
@@ -1077,6 +1084,8 @@ def _filter_scene(scene_path: str, cfg) -> list[dict]:
                     }
                 )
 
+        if invalid_paths and bool(cfg.get("strict_source", False)):
+            raise ValueError(f"Invalid source grasp files: {invalid_paths}")
         if not candidates and total_count == 0:
             output_path.unlink(missing_ok=True)
             records.append(
@@ -1113,20 +1122,22 @@ def _filter_scene(scene_path: str, cfg) -> list[dict]:
                 # that exact endpoint; keep checking every subsequent approach
                 # sample, including the grasp pose.
                 approach = approach[1:]
-            reasons = [
-                _collision_reason(
-                    static_env, qpos, cfg, check_target_penetration=True
+            reasons = []
+            short_circuit = bool(cfg.get("short_circuit_collisions", False))
+            for qpos in approach:
+                reason = _collision_reason(static_env, qpos, cfg, check_target_penetration=True)
+                reasons.append(reason)
+                if short_circuit and reason is not None:
+                    break
+            if not short_circuit or not any(reason is not None for reason in reasons):
+                reasons.append(
+                    _collision_reason(
+                        static_env,
+                        qposes["squeeze_qpos"],
+                        cfg,
+                        check_target_penetration=False,
+                    )
                 )
-                for qpos in approach
-            ]
-            reasons.append(
-                _collision_reason(
-                    static_env,
-                    qposes["squeeze_qpos"],
-                    cfg,
-                    check_target_penetration=False,
-                )
-            )
             if "target_penetration" in reasons:
                 rejected_target_penetration += 1
                 continue
@@ -1193,7 +1204,7 @@ def _filter_scene(scene_path: str, cfg) -> list[dict]:
                 "rejected_target_contact": rejected_contact,
                 "rejected_lift": rejected_lift,
             }
-            np.save(output_path, result)
+            atomic_npy(output_path, result)
             status = "saved"
         elif output_path.exists():
             output_path.unlink()

@@ -81,6 +81,147 @@
         "OMP_NUM_THREADS": "1",
         "MKL_NUM_THREADS": "1"
       },
+      "name": "3. DexGraspNet 2.0：剩余 ShapeNet 单物体抓取生成与验证",
+      "program": "${workspaceFolder}/scripts/generate_dexgraspnet2_single_object_grasps.py",
+      "args": [
+        "--object",
+        "${input:dgn2ObjectName}",
+        "--epochs",
+        "1",
+        "--points",
+        "128",
+        "--inplane",
+        "8",
+        "--gpu",
+        "0",
+        "--workers",
+        "84",
+        "--no-keep-failed",
+        "--all-hand-contacts"
+      ]
+    },
+    {
+      "type": "debugpy",
+      "request": "launch",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "subProcess": false,
+      "env": {
+        "MUJOCO_GL": "egl",
+        "PYTHONPATH": "${workspaceFolder}",
+        "OPENBLAS_NUM_THREADS": "1",
+        "OMP_NUM_THREADS": "1",
+        "MKL_NUM_THREADS": "1"
+      },
+      "name": "4. GraspNet：官方场景 MuJoCo 抓取过滤",
+      "program": "${workspaceFolder}/scripts/filter_graspnet_scene_grasps.py",
+      "args": [
+        "--scene",
+        "${input:graspnetFilterScene}",
+        "--workers",
+        "84"
+      ],
+      "python": "${workspaceFolder}/.envs/mujoco333/bin/python"
+    },
+    {
+      "name": "7. 全部已生成抓取：接触复验（允许额外接触，保留已改标）",
+      "type": "debugpy",
+      "request": "launch",
+      "python": "${workspaceFolder}/.envs/mujoco333/bin/python",
+      "program": "${workspaceFolder}/scripts/refilter_taxonomy_contacts.py",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "subProcess": false,
+      "env": {
+        "MUJOCO_GL": "egl",
+        "PYTHONPATH": "${workspaceFolder}",
+        "OPENBLAS_NUM_THREADS": "1",
+        "OMP_NUM_THREADS": "1",
+        "MKL_NUM_THREADS": "1"
+      },
+      "args": ["--workers", "84", "--allow-extra-contacts"]
+    },
+    {
+      "type": "debugpy",
+      "request": "launch",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "subProcess": false,
+      "env": {
+        "MUJOCO_GL": "egl",
+        "PYTHONPATH": "${workspaceFolder}",
+        "OPENBLAS_NUM_THREADS": "1",
+        "OMP_NUM_THREADS": "1",
+        "MKL_NUM_THREADS": "1"
+      },
+      "name": "5. DexGraspNet 2.0：219 个 ShapeNet 测试场景抓取过滤",
+      "program": "${workspaceFolder}/scripts/filter_dexgraspnet2_scene_grasps.py",
+      "args": [
+        "--workers",
+        "84"
+      ],
+      "python": "${workspaceFolder}/.envs/mujoco333/bin/python"
+    },
+    {
+      "type": "debugpy",
+      "request": "launch",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "subProcess": false,
+      "env": {
+        "MUJOCO_GL": "egl",
+        "PYTHONPATH": "${workspaceFolder}",
+        "OPENBLAS_NUM_THREADS": "1",
+        "OMP_NUM_THREADS": "1",
+        "MKL_NUM_THREADS": "1"
+      },
+      "name": "6. GraspNet：450 个官方测试场景抓取过滤",
+      "program": "${workspaceFolder}/scripts/filter_graspnet_test_scene_grasps.py",
+      "args": [
+        "--workers",
+        "84"
+      ],
+      "python": "${workspaceFolder}/.envs/mujoco333/bin/python"
+    },
+    {
+      "type": "debugpy",
+      "request": "launch",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "subProcess": false,
+      "env": {
+        "MUJOCO_GL": "egl",
+        "PYTHONPATH": "${workspaceFolder}",
+        "OPENBLAS_NUM_THREADS": "1",
+        "OMP_NUM_THREADS": "1",
+        "MKL_NUM_THREADS": "1"
+      },
+      "name": "DexGraspNet 2.0：接入 219 个 ShapeNet 测试场景",
+      "program": "${workspaceFolder}/scripts/prepare_dexgraspnet2_test_scenes.py",
+      "args": [
+        "--verify-workers",
+        "8"
+      ]
+    },
+    {
+      "type": "debugpy",
+      "request": "launch",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "subProcess": false,
+      "env": {
+        "MUJOCO_GL": "egl",
+        "PYTHONPATH": "${workspaceFolder}",
+        "OPENBLAS_NUM_THREADS": "1",
+        "OMP_NUM_THREADS": "1",
+        "MKL_NUM_THREADS": "1"
+      },
       "name": "GraspNet：下载并接入全部 88 个物体",
       "program": "${workspaceFolder}/scripts/prepare_graspnet_objects.py",
       "args": [
@@ -88,25 +229,106 @@
       ]
     },
     {
-      "name": "MuJoCo: View native surface sample points",
       "type": "debugpy",
       "request": "launch",
-      "program": "${workspaceFolder}/scripts/view_native_sample_points.py",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "subProcess": false,
+      "env": {
+        "MUJOCO_GL": "egl",
+        "PYTHONPATH": "${workspaceFolder}",
+        "OPENBLAS_NUM_THREADS": "1",
+        "OMP_NUM_THREADS": "1",
+        "MKL_NUM_THREADS": "1"
+      },
+      "name": "DexGraspNet 2.0：下载并接入剩余 ShapeNet 物体",
+      "program": "${workspaceFolder}/scripts/prepare_dexgraspnet2_objects.py",
+      "args": [
+        "--download",
+        "--workers",
+        "24"
+      ]
+    },
+    {
+      "name": "DexGraspNet 2.0：下载附带模型库（7,985 个）",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/scripts/prepare_dexgraspnet2_objects.py",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "args": [
+        "--full-release",
+        "--download",
+        "--downloads",
+        "${workspaceFolder}/downloads/dexgraspnet2_full_20261014"
+      ]
+    },
+    {
+      "name": "DexGraspNet 2.0：下载并解包 7600 个训练场景（仅场景）",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/scripts/prepare_dexgraspnet2_train_scenes.py",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "env": {
+        "OPENBLAS_NUM_THREADS": "1",
+        "OMP_NUM_THREADS": "1",
+        "MKL_NUM_THREADS": "1"
+      },
+      "args": [
+        "--download",
+        "--workers",
+        "3"
+      ]
+    },
+    {
+      "type": "debugpy",
+      "request": "launch",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "subProcess": false,
+      "env": {
+        "MUJOCO_GL": "glfw",
+        "PYTHONPATH": "${workspaceFolder}",
+        "OPENBLAS_NUM_THREADS": "1",
+        "OMP_NUM_THREADS": "1",
+        "MKL_NUM_THREADS": "1"
+      },
+      "name": "8. 已生成抓取：按类别去重（五套库）",
+      "program": "${workspaceFolder}/scripts/deduplicate_grasps.py",
+      "args": ["--workers", "32"]
+    },
+    {
+      "type": "debugpy",
+      "request": "launch",
       "cwd": "${workspaceFolder}",
       "console": "integratedTerminal",
       "justMyCode": false,
       "env": {
         "MUJOCO_GL": "glfw",
-        "PYTHONPATH": "${workspaceFolder}"
+        "PYTHONPATH": "${workspaceFolder}",
+        "OPENBLAS_NUM_THREADS": "1",
+        "OMP_NUM_THREADS": "1",
+        "MKL_NUM_THREADS": "1"
       },
+      "name": "MuJoCo：通用数据集查看器",
+      "program": "${workspaceFolder}/scripts/view_clutter_grasps_mujoco.py",
       "args": [
-        "--sampling",
-        "${input:nativeSamplingFile}",
-        "--view"
+        "--gui"
       ]
     }
   ],
   "inputs": [
+    {
+      "id": "graspnetFilterScene",
+      "type": "promptString",
+      "description": "官方训练场景编号，例如 scene_0000；输入 scene_* 过滤全部 7600 个场景，复用单物体库",
+      "default": "scene_0000"
+    },
     {
       "id": "dgnObjectName",
       "type": "promptString",
@@ -120,10 +342,10 @@
       "default": "000"
     },
     {
-      "id": "nativeSamplingFile",
+      "id": "dgn2ObjectName",
       "type": "promptString",
-      "description": "单物体抓取库 sampling 目录中的 epoch_*.npz 文件",
-      "default": ""
+      "description": "DexGraspNet 2.0 公开测试集的 ShapeNet 物体 ID；默认 * 遍历全部 937 个，不包含 GraspNet 000–087",
+      "default": "*"
     }
   ]
 }

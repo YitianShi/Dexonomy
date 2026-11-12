@@ -15,6 +15,17 @@ if ! command -v xauth >/dev/null 2>&1; then
 fi
 
 target_file=/tmp/dexonomy-devcontainer.xauth
+if [[ -d "${target_file}" ]]; then
+  if ! rmdir -- "${target_file}" 2>/dev/null; then
+    echo "${target_file} is a directory and cannot be replaced by the X11 auth file." >&2
+    echo "Remove that empty, Docker-created directory, then reopen the dev container." >&2
+    exit 1
+  fi
+elif [[ -e "${target_file}" && ! -f "${target_file}" ]]; then
+  echo "${target_file} exists but is not a regular file." >&2
+  exit 1
+fi
+
 temporary_file="$(mktemp /tmp/dexonomy-devcontainer-xauth.XXXXXX)"
 cleanup() {
   [[ "${temporary_file}" == /tmp/dexonomy-devcontainer-xauth.* ]] \

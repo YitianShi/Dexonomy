@@ -17,6 +17,7 @@ from dexonomy.util.np_util import (
     np_get_delta_pose,
 )
 from dexonomy.sim.basic import HandCfg, SimCfg
+from dexonomy.util.mujoco_util import delete_spec_element
 
 
 class MuJoCo_BaseEnv:
@@ -181,6 +182,11 @@ class MuJoCo_BaseEnv:
             g.solref[:2] = [0.005, 1]
             g.margin = self._cfg.hand_margin
 
+        # The environment owns global solver settings. Explicitly align the
+        # hand's otherwise ignored defaults to avoid attachment conflicts.
+        child_spec.option.cone = self._spec.option.cone
+        child_spec.option.impratio = self._spec.option.impratio
+
         attach_frame = self._spec.worldbody.add_frame()
         child_world = attach_frame.attach_body(
             child_spec.worldbody, self._cfg.hand_prefix, ""
@@ -189,14 +195,16 @@ class MuJoCo_BaseEnv:
         if not arm_flag and freejoint:
             child_world.add_freejoint(name="hand_freejoint")
             self._spec.worldbody.add_body(name="mocap_body", mocap=True)
-            self._spec.add_equality(
+            weld = self._spec.add_equality(
                 type=mujoco.mjtEq.mjEQ_WELD,
                 name1="mocap_body",
                 name2=f"{self._cfg.hand_prefix}world",
                 objtype=mujoco.mjtObj.mjOBJ_BODY,
                 solimp=self._cfg.hand_mocap_solimp,
-                data=self._cfg.hand_mocap_data,
             )
+            # Later MuJoCo versions extend mjNEQDATA. Keep the configured legacy
+            # entries and leave any new fields at the engine's defaults.
+            weld.data[:len(self._cfg.hand_mocap_data)] = self._cfg.hand_mocap_data
         else:
             if skip_table_cbody is not None:
                 for body_name in skip_table_cbody:
@@ -251,8 +259,8 @@ class MuJoCo_BaseEnv:
         # if not self._cfg.obj_freejoint:
         #     for j in child_spec.joints:
         #         j.delete()
-        for a in child_spec.actuators:
-            a.delete()
+        for a in list(child_spec.actuators):
+            delete_spec_element(child_spec, a)
 
         attach_frame = self._spec.worldbody.add_frame()
         child_world = attach_frame.attach_body(

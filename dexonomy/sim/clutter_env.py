@@ -159,7 +159,12 @@ class MuJoCoClutterEnv:
         body_name = prefix + "world"
         joint_name = prefix + "freejoint"
         freejoint = child_world.add_freejoint(name=joint_name)
-        freejoint.damping = self.cfg.freejoint_damping
+        if np.ndim(freejoint.damping):
+            # New MjSpec bindings expose polynomial coefficients; only the
+            # linear term corresponds to the original scalar damping.
+            freejoint.damping[0] = self.cfg.freejoint_damping
+        else:
+            freejoint.damping = self.cfg.freejoint_damping
         self._body_names.append(body_name)
         self._joint_names.append(joint_name)
 

@@ -5,6 +5,53 @@
 - `vmf-contact2`：随机选择物体、在桌面上方投放、等待连续稳定、拒绝越界或超时场景，并在抓取与预抓取位置检查完整场景碰撞。
 - [DexGraspNet 2.0](https://github.com/PKU-EPIC/DexGraspNet2)：先复用单物体抓取标签，再映射到 clutter 场景，最后通过物理仿真筛选。
 
+## 官方 DexGraspNet 2.0 训练场景：只下载布局
+
+使用 **DexGraspNet 2.0：下载并解包 7600 个训练场景（仅场景）** 启动项，或执行：
+
+```bash
+python scripts/prepare_dexgraspnet2_train_scenes.py --download --workers 3
+```
+
+导入器固定[官方数据包](https://huggingface.co/datasets/lhrlhr/DexGraspNet2.0)版本
+`b7dbc0ce452d5ab2eda66016ba22d6a1e25e71a4`，下载 `scenes_0.tar.gz` 至
+`scenes_8.tar.gz` 共 124.6 GB，并逐包校验官方 SHA256。训练布局包括
+`scene_0000–0099` 的 100 个原始场景，以及 `scene_1000–8499` 的 7,500 个
+删减物体后的增强布局。已核对的 100 个原始场景实际包含 40 个 GraspNet 物体 ID，
+与论文报告的 60 个存在差异；最终物体清单从公开标注统计，写入 `import_manifest.json`。
+包中还有图像，但解包只保留
+realsense 的 `annotations/0000.xml`、`cam0_wrt_table.npy`、`camera_poses.npy`。
+同一场景的物体布局固定，选一个视角即可恢复几何场景；不保存 RGB、深度或抓取标签。
+
+按照[官方场景加载器](https://github.com/PKU-EPIC/DexGraspNet2/blob/main/src/utils/dataset.py)，
+将相机中的物体位姿变换到桌面坐标：
+
+$$
+T_{\mathrm{table}\leftarrow\mathrm{object}}
+= A\,P_0\,T_{\mathrm{camera}(0)\leftarrow\mathrm{object}},
+\qquad A=\texttt{cam0\_wrt\_table},\quad P_0=\texttt{camera\_poses[0]}.
+$$
+
+XML 的四元数按 `wxyz` 读取并归一化；位置和模型均保持米制，不重新投放、缩放或沉降物体。
+模型复用 `assets/object/graspnet_1billion` 的现有资产；桌面配置为桌面坐标系的 `z=0`
+平面。这里导入的是官方物体布局，后续 MuJoCo 验证使用本项目的物理参数。
+
+```text
+assets/scene/dexgraspnet2_train/
+├── raw/scenes/scene_XXXX/realsense/       # 官方位姿和变换原文件
+├── scenes/scene_XXXX.json                # 桌面坐标中的物体列表和位姿
+├── scene_cfg/scene_XXXX/<target>.npy      # 每个目标对应完整场景
+├── progress/part_0.json ... part_8.json   # 下载、解包、转换进度
+├── import_parts/                        # 各分包的续跑记录
+├── import_manifest.json                 # 全部完成后写入的清单
+└── runtime.json
+```
+
+同一个物理场景会有多份 target 配置；这些文件共享相同布局，只改变当前抓取目标。
+成功导入一个分包后自动删除该压缩包，可用 `--keep-archives` 保留。重新运行同一命令
+会续传未完成的下载并跳过已导入分包。该命令只准备场景，不启动单物体生成或场景抓取过滤。
+下载日志可查看 `output/logs/prepare_dexgraspnet2_train_scenes.log`。
+
 ## 1. 一次完成场景生成与抓取过滤
 
 先构建包含当前代码的镜像：
@@ -25,7 +72,7 @@ docker compose run --rm dexonomy dexrun \
 
 工作进程优先使用 `forkserver`，在独立服务进程中预加载 CPU 依赖；不支持时回退到 `spawn`。物体目录只序列化一次，子进程从本地临时文件并发读取；每个进程的原生计算线程限制为 1，避免进程数与 BLAS/OpenMP 线程数相乘。场景生成入口不加载 Torch，抓取过滤需要的手部仿真依赖在第一次过滤时才加载。日志会分别显示物体目录扫描耗时、每个进程的 `worker ready`、过滤尝试次数及最终抓取数。
 
-当前 VS Code 入口只生成独立物体抓取，见 [单物体流程](single_object_grasps_zh.md)。场景流程保留为后续命令行功能。
+VS Code 的抓取生成入口只生成独立物体抓取，见 [单物体流程](single_object_grasps_zh.md)。官方场景过滤使用独立启动项 **4. GraspNet：官方场景 MuJoCo 抓取过滤**，详见 [场景过滤入口](graspnet_scene_filter_zh.md)。
 
 后续场景流程可通过 `op.scene.spawn_xy_scale` 和 `op.scene.spawn_gap` 控制投放范围与间隙；已有场景不受新投放参数影响。
 
@@ -50,7 +97,7 @@ docker compose run --rm dexonomy dexrun \
   op.scene.num_scenes=100 n_worker=8
 ```
 
-过滤已经生成的场景，若整个场景为零抓取则按原编号重建并继续过滤：
+只过滤已有场景，保留原布局；零抓取目标记录为零，不重新生成场景：
 
 ```bash
 docker compose run --rm dexonomy dexrun \
@@ -101,7 +148,7 @@ MUJOCO_GL=glfw python -m dexonomy.main op=clutter exp_name=clutter_debug \
 
 此命令启用 GLFW、`debug_view=true` 和实时播放，连续生成 10 个调试场景
 （`scene_000000` 到 `scene_000009`），输出到 `output/clutter_debug_shadow/`。
-当前 VS Code 启动配置只提供单物体流程，场景调试使用上述命令。
+随机场景投放调试使用上述命令；官方已有布局的过滤有独立 VS Code 启动项。
 
 调试命令设置 `op.seed=null`，每次启动使用新的随机种子，重新采样物体、尺度和投放姿态。实际种子会输出到终端并写入 `clutter/manifest.json` 的 `seed` 字段；重新生成同编号场景时，会清理该场景目录中不再使用的旧 target 配置。普通生成任务仍默认使用固定种子 36。
 
@@ -180,24 +227,18 @@ docker compose run --rm -T \
 
 1. 执行 **Dev Containers: Rebuild and Reopen in Container**；首次启动会从宿主机复制当前 X11 cookie。
 2. 打开“运行和调试”（`Ctrl+Shift+D`）。
-3. 选择 **MuJoCo: View clutter grasps** 后按 `F5`，输入 filtered grasp 根目录和 scene 名称。
-4. 在 `scripts/view_clutter_grasps_mujoco.py` 中设置的断点会直接生效。若只想检查数据，选择 **MuJoCo: Check clutter grasps (no window)**。
+3. 选择 **MuJoCo：通用数据集查看器** 后按 `F5`，在控制面板中选择数据集、抓取类型、物体或场景和采样数量，点击 **打开 / 更新抓取可视化**。物体与尺度分开选择，尺度显示实际倍数和厘米尺寸。
+4. 在 `scripts/view_clutter_grasps_mujoco.py` 中设置的断点会直接生效。若只想检查数据，使用同一脚本的 `--check` 参数。
 
-两个调试入口都会读取 `scripts/clutter_grasp_viewer.yaml`，所以显示数量仍由 `max_grasps_per_target` 控制，不影响生成的数据集。宿主机必须设置 `DISPLAY`、`XAUTHORITY` 并安装 `xauth`。
+查看器读取 `scripts/clutter_grasp_viewer.yaml` 作为默认参数；控制面板可以修改显示数量、FPS／随机采样及种子，不影响生成的数据集。终端使用 `python scripts/view_clutter_grasps_mujoco.py --gui` 打开同一面板。宿主机必须设置 `DISPLAY`、`XAUTHORITY` 并安装 `xauth`。
 
-如果只想逐个查看单个 target 文件中的抓取，继续使用原来的顺序查看器：
-
-```bash
-MUJOCO_GL=glfw python scripts/view_dataset_mujoco.py \
-  --root output/clutter_mujoco_shadow/clutter/filtered_grasps \
-  --taxonomy 1_Large_Diameter --limit 0 --qpos grasp
-```
+单物体库和场景结果统一使用上述查看器，`--dataset` 从 `output/dataset_index.json` 选择数据，`--object` 选择单物体，`--scene` 选择场景，`--phase` 切换姿态阶段。
 
 场景配置本身也兼容 Dexonomy 的 `load_scene_cfg`、`MuJoCo_OptEnv` 和后续 `op=grasp` / `op=eval` 流程。`gen_grasp` 现在会分别处理 target 接触、distractor/桌面接触和手部自碰撞，避免把旁边物体误当作目标接触。
 
 ## 6. 两个独立步骤：单物体抓取库与杂乱场景过滤
 
-当前 VS Code 只提供 DGN 与 GraspNet 的单物体启动项，详见 [单物体流程](single_object_grasps_zh.md)。以下保留后续场景过滤的命令行说明。
+VS Code 提供独立的单物体生成和官方场景过滤启动项，分别见 [单物体流程](single_object_grasps_zh.md) 与 [官方场景过滤](graspnet_scene_filter_zh.md)。以下保留通用场景过滤的命令行说明。
 
 ### 单物体抓取生成与验证
 
@@ -251,47 +292,16 @@ output/single_object_grasps_dgn_shadow/
 等待已提交组保存；再次使用同一库即可续跑。
 进度每组完成后更新，可用 `watch -n 2 cat output/single_object_grasps_dgn_shadow/progress.json` 查看。
 
-### 单尺度抓取多样性分析
+### 已生成数据的检查
 
-原始抓取保持完整。以下命令只读取当前任务中已经完成全部抓取类型和轮数的
-物体/尺度组合，使用两个 CPU 进程生成分析报告，不占用 GPU：
+数据读取统一使用 `scripts/view_clutter_grasps_mujoco.py`。例如检查物体 `031`：
 
 ```bash
-python scripts/analyze_grasp_diversity.py --workers 2
+python scripts/view_clutter_grasps_mujoco.py --dataset graspnet_single \
+  --object 031 --limit 1 --max-grasps 20 --check
 ```
 
-可加 `--object 物体编号 --scale 0.05` 检查指定尺度。默认分析 `grasp_qpos`，
-也支持 `--phase pregrasp` 或 `--phase squeeze`。每个物体和尺度独立分析，
-不会把不同尺度混为一个抓取池；正在生成但尚未完成的尺度留给下一次分析。
-
-默认的近重复条件需要同时满足：手根位置距离不超过物体实际 OBB 对角线的
-2%、SO(3) 旋转角不超过 10°、22 个手指关节角差的 RMS 不超过 5°，
-任一关节角差不超过 15°。四元数 `q` 和 `-q` 按同一旋转处理。
-报告还计算严格和宽松两组阈值，检查结论对阈值是否敏感。
-局部近重复数量精确计算；大抓取池的全局距离分位数使用 20,000 对固定种子的随机抓取对。
-
-`output/grasp_diversity_dgn_shadow/` 保存总体 `summary.json`、每尺度指标
-`object_scale_metrics.csv`、复查清单 `needs_review.csv`、代表抓取索引
-`representatives.npz`、详细示例 `examples.json`、图表 `diversity_report.png` 和中文
-`report.md`。索引只建立一个独立视图，不删除任何原始抓取。
-代表抓取两两不满足默认近重复条件；每个未入选的有限抓取都与一个入选抓取直接接近，
-不会用传递连通关系把一整条逐渐变化的抓取链压成一个姿态。
-
-默认筛查标记为：代表抓取少于 64 个、可合并冗余超过 30%、手根空间方向覆盖
-少于 48 个近似等面积方向区间中的 8 个，或出现无效手姿态。
-这些是工程筛查阈值。物体几何与可抓面可能解释标记；通过筛查也不等于覆盖全部物理可行抓取。
-方向覆盖统计手根相对物体中心的位置，不代表物体接触面积覆盖。
-
-可用以下方式读取报告中的代表抓取；如果源库姿态已变化，读取器会要求重新分析：
-
-```python
-from scripts.analyze_grasp_diversity import load_representative_grasps
-view = load_representative_grasps(
-    "output/grasp_diversity_dgn_shadow",
-    "<object>/floating/scale_<hash>",
-)
-qpos = view["qpos"]
-```
+已有多样性分析报告保存在 [analysis](../analysis/README.md)，数学定义见[单物体流程第 13 节](single_object_grasps_zh.md#13-fps-与多样性生成后如何评估)。独立离线分析和绘图脚本已清理，报告与原始抓取继续保留。
 
 ### 后续可选：杂乱场景抓取过滤
 

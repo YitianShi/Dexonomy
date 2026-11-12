@@ -11,7 +11,7 @@ dependencies = [
     "torch>=2.5.0",
     "numpy==2.2.6",
     "warp-lang==1.8.0",
-    "mujoco==3.3.3",
+    "mujoco==4.0.0",
     "trimesh[easy]==4.5.3",
     "matplotlib==3.10.3",
     "imageio==2.37.0",
@@ -21,6 +21,9 @@ dependencies = [
     "usd-core==25.2",
     "ruamel.yaml==0.18.10",
 ]
+
+[project.optional-dependencies]
+viewer = ["PySide6-Essentials==6.8.3"]
 
 [tool.setuptools]
 packages = ["dexonomy"]
@@ -32,7 +35,7 @@ dexsyn = "dexonomy.script:main"  # Full pipeline runner
 dexsyn_admm = "dexonomy.script_admm:main"  # Full pipeline runner
 
 [tool.ruff]
-extend-exclude = ["assets", "data", "downloads", "output*", "third_party", ".envs"]
+extend-exclude = ["assets", "data", "downloads", "output*", "analysis", "visualizations", "reports", "third_party", ".envs"]
 
 [tool.ruff.lint]
 # Check correctness without marking whole import blocks for style-only sorting.
@@ -48,6 +51,9 @@ exclude = [
     "data",
     "downloads",
     "output*",
+    "analysis",
+    "visualizations",
+    "reports",
     "third_party",
     ".envs",
 ]

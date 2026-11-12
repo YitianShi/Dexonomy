@@ -10,6 +10,10 @@ __pycache__/
 
 debug*
 output*
+/analysis/
+/visualizations/
+/reports/
+/work_runs/
 assets/object
 MUJOCO_LOG.TXT
 task/
@@ -19,3 +23,6 @@ data/*.tar.gz
 data/extracted/
 data/.dexonomy_extracted/
 downloads/
+assets/scene/dexgraspnet2_train/
+assets/scene/dexgraspnet2_shapenet_test/
+assets/scene/dexgraspnet2_graspnet_test/

@@ -44,8 +44,8 @@ succ_grasp_dir: ${save_dir}/succ_grasp
 traj_dir: ${save_dir}/traj_data
 succ_traj_dir: ${save_dir}/succ_traj
 new_tmpl_dir: ${save_dir}/new_tmpl
-vis_3d_dir: ${save_dir}/vis_3d
-vis_usd_dir: ${save_dir}/vis_usd
+vis_3d_dir: visualizations/${exp_name}_${hand_name}/vis_3d
+vis_usd_dir: visualizations/${exp_name}_${hand_name}/vis_usd
 debug_dir: ${save_dir}/debug
 
 # Path for logs

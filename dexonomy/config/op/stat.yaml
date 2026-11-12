@@ -1,4 +1,4 @@
 obj_scale: False
 diversity: False
 cln_cdc: False
-cust_log_dir: ${log_dir}
+cust_log_dir: analysis/${exp_name}_${hand_name}/stat_${log_id}

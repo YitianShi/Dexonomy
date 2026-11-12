@@ -2,6 +2,14 @@
 
 [Project Page](https://pku-epic.github.io/Dexonomy) | [Paper](https://arxiv.org/abs/2504.18829) | [Dataset](https://huggingface.co/datasets/JiayiChenPKU/Dexonomy/tree/main) | [Learning](https://github.com/JYChen18/DexLearn)
 
+## Local Generated Data
+
+The five final grasp datasets are physical directories under [output/datasets](output/datasets/README.md). Obsolete producer payloads and checkpoints were removed; new generation/filtering work files default to `work_runs/`. Auxiliary results are stored separately in [analysis](analysis/README.md), [visualizations](visualizations/README.md), and [reports](reports/README.md). See the [data catalog](docs/generated_data_zh.md) for dataset counts and entry points.
+
+Local scripts cover asset preparation, grasp generation, scene filtering, and one [MuJoCo dataset viewer](scripts/view_clutter_grasps_mujoco.py). Standalone analysis, plotting, and experiment scripts have been removed; their saved results remain available. The original Dexonomy operations are preserved.
+
+Open the viewer's desktop control panel with `python scripts/view_clutter_grasps_mujoco.py --gui`, or select **MuJoCo：通用数据集查看器** in VS Code. Choose a dataset, grasp type, object or scene, and the per-object sample count using FPS or random sampling, then click **打开 / 更新抓取可视化**. Object scales use actual numeric values and a mesh preview shows dimensions in centimetres. Install the optional Qt interface with `python -m pip install -e '.[viewer]'`; the Docker image includes it.
+
 ## Overview
 
 <div style="text-align: center;">
@@ -79,6 +87,11 @@ For a detailed walkthrough of **template annotation** and **code usage**, please
 
 ## Docker and Official Visualization
 
+The runtime pins MuJoCo **4.0.0**. When upgrading an existing environment from
+3.3.3, uninstall `mujoco` first, then run `python -m pip install -e .`; 4.0 splits
+the distribution into core and Studio packages that share the `mujoco` namespace.
+See the [upgrade notes](docs/docker_visualization_zh.md#8-mujoco-40-升级说明).
+
 The Docker runtime supports the repository's official `v3d` (OBJ) and `vusd` (USD) visualization operations:
 
 ```bash
@@ -90,14 +103,14 @@ docker compose build dexonomy
 docker compose run --rm dexonomy dexrun op=v3d hand=shadow \
   op.data=succ_grasp op.n_max=5 n_worker=4 tmpl_name=1_Large_Diameter \
   succ_grasp_dir=data/extracted/Dexonomy_GRASP_shadow/succ_collect \
-  vis_3d_dir=output/official_visualization/v3d
+  vis_3d_dir=visualizations/official_visualization/v3d
 docker compose run --rm dexonomy dexrun op=vusd hand=shadow \
   op.data=succ_grasp op.n_max=5 n_worker=4 tmpl_name=1_Large_Diameter \
   succ_grasp_dir=data/extracted/Dexonomy_GRASP_shadow/succ_collect \
-  vis_usd_dir=output/official_visualization/vusd
+  vis_usd_dir=visualizations/official_visualization/vusd
 ```
 
-The outputs are written to `output/official_visualization/`. See [docs/docker_visualization_zh.md](docs/docker_visualization_zh.md) for data mapping, direct `dexrun` commands, `usdview` usage, and GPU synthesis commands.
+The outputs are written to `visualizations/official_visualization/`. See [docs/docker_visualization_zh.md](docs/docker_visualization_zh.md) for data mapping, direct `dexrun` commands, `usdview` usage, and GPU synthesis commands.
 
 ## MuJoCo Clutter Dataset
 
@@ -143,6 +156,54 @@ to `output/single_object_grasps_dgn_shadow` and
 Exhaustive contact checkpoints use a separate `runs/all_contacts_*` directory;
 previous successful grasps remain in the published library.
 See [the single object workflow](docs/single_object_grasps_zh.md) for launches and progress.
+
+For completed dataset counts, storage paths, provenance and cleanup records, see
+the [generated data catalog](docs/generated_data_zh.md).
+
+The separate **3. DexGraspNet 2.0：剩余 ShapeNet 单物体抓取生成与验证**
+launch covers the 937 unique ShapeNet objects in the released official test
+annotations, excluding the 88 GraspNet objects. Prepare them with
+`python scripts/prepare_dexgraspnet2_objects.py --download --workers 24`, then run
+`python scripts/generate_dexgraspnet2_single_object_grasps.py`.
+This entry defaults to all selected objects, GPU 0 and 84 CPU workers. It keeps
+the physical coordinates from the official `scaled.obj`, builds V-HACD convex
+collision meshes and validates the MuJoCo assets. Inputs are fixed under
+`assets/object/dexgraspnet2_shapenet`; generated grasps are saved separately under
+`output/single_object_grasps_dgn2_shapenet_shadow`. The public test inventory has
+937 ShapeNet IDs rather than the 1,231 reported in the paper; the importer pins
+the official archive revision and records the exact selection and checksums.
+
+To download every model in the bundled model pool, use **DexGraspNet 2.0：下载附带模型库（7,985 个）**
+or `python scripts/prepare_dexgraspnet2_objects.py --full-release --download --downloads downloads/dexgraspnet2_full_20261014`.
+The full raw model files are kept under `assets/object/dexgraspnet2_full`, with
+7,897 complete ACRONYM geometries and 88 GraspNet models indexed separately from
+incomplete model directories. This 7,985-model catalog is larger than the paper's
+1,319-object benchmark. `benchmark_inventory.json` separately records the 1,025 IDs
+confirmed from the released annotations and all 88 GraspNet models; 294 benchmark
+IDs remain unresolved. The extra model pool does not complete this mapping.
+Extra raw models require MuJoCo asset conversion before generation.
+
+Prepare the official 7,600 training scene layouts separately with
+`python scripts/prepare_dexgraspnet2_train_scenes.py --download --workers 3`, or
+the **DexGraspNet 2.0：下载并解包 7600 个训练场景（仅场景）** launch.
+The importer downloads the nine relevant official archives (124.6 GB in total),
+checks their SHA256, and retains only view-0 pose annotations and camera transforms.
+It reuses the existing meter-scale GraspNet models and converts object poses to the
+table frame under `assets/scene/dexgraspnet2_train/scene_cfg`, with one target config
+per object per scene. No RGB/depth images or grasp labels are extracted; each archive
+is removed after a successful import unless `--keep-archives` is set. Per-archive
+progress and resumable import records are kept alongside the scene configs. This
+preparation does not launch grasp generation or clutter filtering.
+
+Filter the reusable single-object library in those layouts with the independent
+**4. GraspNet：官方场景 MuJoCo 抓取过滤** launch, or run
+`python scripts/filter_graspnet_scene_grasps.py --scene scene_0000 --workers 84`.
+Use `--scene 'scene_*'` for all training layouts. This CPU-only stage checks the
+pregrasp, sampled approach path, scene/self collisions and target contact for all
+33 grasp types without regenerating grasps or scenes. Add `--lift` for scene-level
+dynamics validation. It preserves zero-grasp layouts, tracks progress and resumes
+unchanged targets while detecting additions to the growing source library.
+See [the scene filtering guide](docs/graspnet_scene_filter_zh.md) for outputs and thresholds.
 
 For VS Code, install the **Dev Containers** extension and run **Dev Containers: Reopen in Container**. The checked-in `.devcontainer` configuration uses the same CUDA image and mounts the repository at `/workspace`.
 

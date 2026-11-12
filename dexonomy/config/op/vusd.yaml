@@ -8,4 +8,4 @@ qpos: ["grasp"] # Choices: combination from [grasp, pregrasp, squeeze, traj_stat
 hand:
   mode: visual  # Choices: [visual, collision]
 
-cust_log_dir: ${log_dir}
+cust_log_dir: reports/${exp_name}_${hand_name}/vusd_${log_id}

@@ -31,17 +31,17 @@ ARCHIVE_SHA256 = "55a13b63f3838881b25ec72187d922454ff5d69ce019816f7f29510b14c13f
 OBJECT_IDS = tuple(f"{i:03d}" for i in range(88))
 
 
-def download_archive(path):
+def download_archive(path, *, url=ARCHIVE_URL, expected_bytes=ARCHIVE_BYTES):
     if path.is_file():
         return
     path.parent.mkdir(parents=True, exist_ok=True)
     partial = path.with_suffix(path.suffix + ".part")
     offset = partial.stat().st_size if partial.exists() else 0
-    if offset > ARCHIVE_BYTES:
+    if offset > expected_bytes:
         raise ValueError(f"Oversized partial download: {partial}")
-    if offset < ARCHIVE_BYTES:
+    if offset < expected_bytes:
         headers = {"Range": f"bytes={offset}-"} if offset else {}
-        with requests.get(ARCHIVE_URL, headers=headers, stream=True, timeout=(30, 120)) as response:
+        with requests.get(url, headers=headers, stream=True, timeout=(30, 120)) as response:
             response.raise_for_status()
             if offset and (response.status_code != 206 or not response.headers.get(
                     "Content-Range", "").startswith(f"bytes {offset}-")):
@@ -52,21 +52,21 @@ def download_archive(path):
                     stream.write(chunk)
                     offset += len(chunk)
                     if time.monotonic() - last_report > 20:
-                        print(f"Download: {offset / ARCHIVE_BYTES:.1%} ({offset / 1e9:.2f} GB)", flush=True)
+                        print(f"Download: {offset / expected_bytes:.1%} ({offset / 1e9:.2f} GB)", flush=True)
                         last_report = time.monotonic()
-    if partial.stat().st_size != ARCHIVE_BYTES:
+    if partial.stat().st_size != expected_bytes:
         raise ValueError(f"Incomplete archive: {partial}")
     partial.replace(path)
 
 
-def archive_digest(path):
-    if path.stat().st_size != ARCHIVE_BYTES:
+def archive_digest(path, *, expected_bytes=ARCHIVE_BYTES, expected_sha256=ARCHIVE_SHA256):
+    if path.stat().st_size != expected_bytes:
         raise ValueError(f"Archive size differs from the official release: {path}")
     digest = hashlib.sha256()
     with path.open("rb") as stream:
         for chunk in iter(lambda: stream.read(8 * 1024 * 1024), b""):
             digest.update(chunk)
-    if digest.hexdigest() != ARCHIVE_SHA256:
+    if digest.hexdigest() != expected_sha256:
         raise ValueError("Archive SHA256 differs from the official Hugging Face LFS checksum")
     return digest.hexdigest()
 
@@ -122,7 +122,7 @@ def link_transforms(robot):
     parents = {}
     for joint in robot.findall("joint"):
         if joint.get("type") != "fixed":
-            raise ValueError("GraspNet objects must be rigid: found a non-fixed joint")
+            raise ValueError("Objects must be rigid: found a non-fixed joint")
         child, parent = joint.find("child").get("link"), joint.find("parent").get("link")
         if child in parents or child not in links or parent not in links:
             raise ValueError("Invalid URDF link tree")
@@ -146,9 +146,9 @@ def numbers(values):
     return " ".join(f"{float(value):.17g}" for value in values)
 
 
-def convert_object(object_id, source_root, output_root):
-    if object_id not in OBJECT_IDS:
-        raise ValueError(f"Invalid GraspNet object ID: {object_id}")
+def convert_object(object_id, source_root, output_root, *, allowed_ids=OBJECT_IDS, model_prefix="graspnet"):
+    if object_id not in allowed_ids or Path(object_id).name != object_id or object_id in {".", ".."}:
+        raise ValueError(f"Invalid object ID: {object_id}")
     source = (source_root / object_id).resolve()
     urdf_source = source / "coacd/coacd.urdf"
     robot = ET.parse(urdf_source).getroot()
@@ -171,7 +171,7 @@ def convert_object(object_id, source_root, output_root):
     visual_source = source / "simplified.obj"
     if not visual_source.is_file():
         raise ValueError(f"Official simplified surface mesh is missing: {object_id}")
-    mesh = trimesh.load(visual_source, force="mesh", process=False)
+    mesh = trimesh.load(visual_source, force="mesh", process=False, skip_materials=True)
     if not len(mesh.faces) or not np.isfinite(mesh.vertices).all():
         raise ValueError(f"Invalid surface mesh: {object_id}")
 
@@ -180,7 +180,7 @@ def convert_object(object_id, source_root, output_root):
     mesh_directory.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(visual_source, mesh_directory / "simplified.obj")
     shutil.copytree(urdf_source.parent, urdf_directory, dirs_exist_ok=True)
-    xml = ET.Element("mujoco", model=f"graspnet_{object_id}")
+    xml = ET.Element("mujoco", model=f"{model_prefix}_{object_id}")
     ET.SubElement(xml, "compiler", angle="radian", meshdir=".")
     asset = ET.SubElement(xml, "asset")
     ET.SubElement(asset, "mesh", name="surface", file="../mesh/simplified.obj")

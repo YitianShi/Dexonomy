@@ -176,8 +176,9 @@ def operate_stat(cfg):
 
             if cfg.op.obj_scale:
                 save_path = os.path.join(
-                    os.path.dirname(cfg.log_path), tn + "_objscale.png"
+                    cfg.op.cust_log_dir, tn + "_objscale.png"
                 )
+                os.makedirs(cfg.op.cust_log_dir, exist_ok=True)
                 draw_obj_scale_fig(data_lst, save_path)
 
             if cfg.op.diversity:

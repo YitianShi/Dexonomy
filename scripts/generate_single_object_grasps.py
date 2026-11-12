@@ -27,14 +27,23 @@ DATASET_PRESETS = {
     "graspnet": {
         "label": "GraspNet-1Billion",
         "object_root": REPO_ROOT / "assets/object/graspnet_1billion/scene_cfg",
-        "output": REPO_ROOT / "output/single_object_grasps_graspnet_shadow",
+        "output": REPO_ROOT / "work_runs/single_object_grasps_graspnet_shadow",
         "object": "000",
     },
     "dexgraspnet": {
         "label": "DexGraspNet",
         "object_root": REPO_ROOT / "assets/object/DGN_5k/scene_cfg",
-        "output": REPO_ROOT / "output/single_object_grasps_dgn_shadow",
+        "output": REPO_ROOT / "work_runs/single_object_grasps_dgn_shadow",
         "object": "core_bottle_1071fa4cddb2da2fc8724d5673a063a6",
+    },
+    "dexgraspnet2": {
+        "label": "DexGraspNet 2.0 remaining ShapeNet objects",
+        "object_root": REPO_ROOT / "assets/object/dexgraspnet2_shapenet/scene_cfg",
+        "output": REPO_ROOT / "work_runs/single_object_grasps_dgn2_shapenet_shadow",
+        "object": "*",
+        "gpu": 0,
+        "workers": 84,
+        "asset_manifest": REPO_ROOT / "assets/object/dexgraspnet2_shapenet/import_manifest.json",
     },
 }
 
@@ -115,21 +124,22 @@ def parse_args(dataset=None):
         if preset else __doc__))
     if preset:
         parser.set_defaults(object_root=str(preset["object_root"]), output=str(preset["output"]),
-                            object_inventory=None, scale_inventory=None, scene="scene_*")
+                            object_inventory=None, scale_inventory=None, scene="scene_*",
+                            asset_manifest=preset.get("asset_manifest"))
     else:
         parser.add_argument("--object-root", default="assets/object/DGN_5k/scene_cfg")
         parser.add_argument("--object-inventory", help="Select only rigid object IDs present in scene_*/ configs; poses and scales are not imported")
         parser.add_argument("--scale-inventory", help="Optional clutter scene_cfg directory used only to select unique object sizes")
         parser.add_argument("--scene", default="scene_*", help="Inventory scene name or glob")
-        parser.add_argument("--output", default="output/single_object_grasps_dgn_shadow")
+        parser.add_argument("--output", default="work_runs/single_object_grasps_dgn_shadow")
     parser.add_argument("--object", default=preset["object"] if preset else "*",
                         help="Object asset ID or glob; use '*' to process all objects independently")
     parser.add_argument("--taxonomies", nargs="+")
     parser.add_argument("--epochs", type=int, default=1)
     parser.add_argument("--points", type=int, default=128)
     parser.add_argument("--inplane", type=int, default=8)
-    parser.add_argument("--gpu", type=int, default=2)
-    parser.add_argument("--workers", type=int, default=84)
+    parser.add_argument("--gpu", type=int, default=preset.get("gpu", 2) if preset else 2)
+    parser.add_argument("--workers", type=int, default=preset.get("workers", 84) if preset else 84)
     parser.add_argument("--keep-failed", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--all-hand-contacts", action=argparse.BooleanOptionalAction, default=True,
                         help="Enumerate every hand contact against all object points and rolls")
@@ -154,6 +164,10 @@ def generation_directory(output, args):
 
 def main(dataset=None):
     args = parse_args(dataset) if dataset is not None else parse_args()
+    manifest = getattr(args, "asset_manifest", None)
+    if manifest and (not Path(manifest).is_file() or
+                     json.loads(Path(manifest).read_text()).get("status") != "complete"):
+        raise RuntimeError("DexGraspNet 2.0 assets are not ready. Run scripts/prepare_dexgraspnet2_objects.py --download first.")
     output = resolve_path(args.output)
     for value in filter(None, (args.scale_inventory, args.object_root, args.object_inventory)):
         source = resolve_path(value)

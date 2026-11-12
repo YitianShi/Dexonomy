@@ -11,4 +11,4 @@ hand:
 object:
   contact: False
 
-cust_log_dir: ${log_dir}
+cust_log_dir: reports/${exp_name}_${hand_name}/v3d_${log_id}

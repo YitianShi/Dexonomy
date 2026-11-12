@@ -10,7 +10,13 @@ services:
     volumes:
       - .:/workspace:cached
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
-      - /tmp/dexonomy-devcontainer.xauth:/tmp/container.xauth:ro
+      - type: bind
+        source: /tmp/dexonomy-devcontainer.xauth
+        target: /tmp/container.xauth
+        read_only: true
+        bind:
+          # Do not let Docker turn a missing auth file into a directory.
+          create_host_path: false
     deploy:
       resources:
         reservations:

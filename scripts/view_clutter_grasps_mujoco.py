@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
-"""Visualize configured samples of filtered clutter grasps at the same time."""
+"""Inspect single-object and scene grasps from the generated dataset catalog."""
 
 from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
+import fnmatch
+import json
 import os
 from pathlib import Path
+import re
+import stat
 import sys
 import time
 
@@ -15,9 +19,11 @@ import numpy as np
 from ruamel.yaml import YAML
 
 from dexonomy.util.file_util import load_scene_cfg
+from dexonomy.util.mujoco_util import delete_spec_element
 
 
 PHASES = ("pregrasp", "grasp", "squeeze")
+REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG_PATH = Path(__file__).with_name("clutter_grasp_viewer.yaml")
 YAML_LOADER = YAML(typ="safe")
 PALETTE = np.asarray(
@@ -48,6 +54,7 @@ class GraspRecord:
 class SceneGroup:
     name: str
     directories: list[Path]
+    samples: list[tuple[str, Path]] | None = None
 
 
 @dataclass
@@ -70,16 +77,15 @@ def _load_viewer_config(path: str) -> dict:
     return config
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv=None) -> argparse.Namespace:
     config_parser = argparse.ArgumentParser(add_help=False)
     config_parser.add_argument("--config", default=str(DEFAULT_CONFIG_PATH))
-    preliminary_args, _ = config_parser.parse_known_args()
+    preliminary_args, _ = config_parser.parse_known_args(argv)
     config = _load_viewer_config(preliminary_args.config)
 
     parser = argparse.ArgumentParser(
         description=(
-            "Show the complete clutter scene and a configured number of its "
-            "filtered grasps simultaneously in MuJoCo Viewer."
+            "Inspect single-object or scene grasps from output/dataset_index.json."
         )
     )
     parser.add_argument(
@@ -92,9 +98,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--root",
-        default="output/clutter_mujoco_shadow/clutter/filtered_grasps",
-        help="Root directory containing taxonomy/scene_xxxxxx/*.npy.",
+        help="Explicit succ_collect/filtered_grasps directory; overrides --dataset.",
     )
+    parser.add_argument("--catalog", type=Path, default=REPO_ROOT / "output/dataset_index.json")
+    parser.add_argument("--dataset", default=None,
+                        help="Dataset ID; defaults to the deduplicated GraspNet test library when available.")
+    parser.add_argument("--object", default="*", help="Single-object ID or glob; scales stay separate.")
     parser.add_argument(
         "--taxonomy",
         default="all",
@@ -102,8 +111,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--scene",
+        "--item",
         default="",
-        help="Only load one scene (for example scene_000012 or 12).",
+        help="Only load one scene or exact object/scale item shown by the panel.",
     )
     parser.add_argument("--start", type=int, default=0, help="First scene index to show.")
     parser.add_argument(
@@ -123,7 +133,7 @@ def parse_args() -> argparse.Namespace:
         default=int(config.get("max_grasps_per_target", 5)),
         help=(
             "Maximum hand poses per target object at its scene scale after "
-            "farthest-point sampling; "
+            "downsampling (see --sampling); "
             "0 means every filtered grasp (default: viewer YAML)."
         ),
     )
@@ -132,6 +142,10 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=int(config.get("sample_seed", 12)),
         help="Seed used to select the first farthest-point sample (default: viewer YAML).",
+    )
+    parser.add_argument(
+        "--sampling", choices=("fps", "random"), default="fps",
+        help="Downsampling method, applied independently per target object.",
     )
     parser.add_argument(
         "--hand-alpha",
@@ -144,11 +158,77 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--elevation", type=float, default=-30.0)
     parser.add_argument("--hand-xml", default="assets/hand/shadow/right.xml")
     parser.add_argument(
+        "--show-contacts", action="store_true",
+        help="Replay target contacts: green allowed, red outside the selected taxonomy.",
+    )
+    parser.add_argument(
+        "--render-dir", type=Path,
+        help="Export a PNG of each selected scene without opening a window.",
+    )
+    parser.add_argument(
+        "--display",
+        help="Explicit X11 display, e.g. :1; overrides desktop auto-detection.",
+    )
+    parser.add_argument(
+        "--gui", action="store_true",
+        help="Open the dataset, grasp-type and sampling control panel.",
+    )
+    parser.add_argument(
         "--check",
         action="store_true",
         help="Compile selected scenes and validate qposes without opening a window.",
     )
-    return parser.parse_args()
+    args = parser.parse_args(argv)
+    if args.root is None:
+        try:
+            catalog = json.loads(args.catalog.read_text())
+            entries = {entry["id"]: entry for entry in catalog["datasets"]}
+            if args.dataset is None:
+                args.dataset = next((name for name in (
+                    'deduplicated_graspnet_test_clutter', 'taxonomy_filtered_graspnet_test_clutter',
+                    'graspnet_test_clutter',
+                ) if name in entries), next(iter(entries), 'graspnet_test_clutter'))
+            if args.dataset not in entries:
+                parser.error(f"Unknown dataset {args.dataset!r}; choose from {', '.join(entries)}")
+            args.root = str((args.catalog.parent / entries[args.dataset]["data"]).resolve())
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            parser.error(f"Cannot read dataset catalog {args.catalog}: {exc}")
+    elif args.dataset is None:
+        args.dataset = 'graspnet_test_clutter'
+    return args
+
+
+def configure_display(requested: str | None = None) -> None:
+    """Prefer the user's local X server over an inherited login-screen display."""
+    current = os.environ.get("DISPLAY", "")
+    selected = requested if requested is not None else current
+    local = re.fullmatch(r"(?:unix)?:([0-9]+)(?:\.[0-9]+)?", current)
+    if requested is None and sys.platform == "linux" and (not current or local):
+        owned_displays = set()
+        for path in Path("/tmp/.X11-unix").glob("X[0-9]*"):
+            try:
+                info = path.stat()
+            except OSError:
+                continue
+            if (path.name[1:].isdigit() and info.st_uid == os.getuid()
+                    and stat.S_ISSOCK(info.st_mode)):
+                owned_displays.add(int(path.name[1:]))
+        current_number = int(local.group(1)) if local else None
+        if current_number not in owned_displays and len(owned_displays) == 1:
+            selected = f":{next(iter(owned_displays))}"
+            print(
+                f"Desktop display: {current or '<unset>'} -> {selected} "
+                "(X11 socket owned by the current user).",
+                flush=True,
+            )
+    if selected:
+        os.environ["DISPLAY"] = selected
+    elif sys.platform == "linux":
+        raise RuntimeError(
+            "No X11 DISPLAY found. Set --display to your desktop's display; "
+            "use --check for validation without a window."
+        )
+    print(f"Graphics display: DISPLAY={selected or '<system default>'}", flush=True)
 
 
 def _scene_selector(value: str) -> str:
@@ -160,7 +240,7 @@ def _scene_selector(value: str) -> str:
 def collect_scene_groups(args: argparse.Namespace) -> tuple[list[SceneGroup], int]:
     root = Path(args.root)
     if not root.is_dir():
-        candidates = sorted(Path("output").glob("*/clutter/filtered_grasps"))
+        candidates = sorted((REPO_ROOT / "output").glob("*/runs/*/filtered_grasps"))
         hint = ""
         if candidates:
             hint = "\nAvailable filtered grasp roots:\n  " + "\n  ".join(
@@ -171,7 +251,7 @@ def collect_scene_groups(args: argparse.Namespace) -> tuple[list[SceneGroup], in
         )
 
     if args.taxonomy.lower() == "all":
-        taxonomy_dirs = sorted(path for path in root.iterdir() if path.is_dir())
+        taxonomy_dirs = sorted(path for path in root.glob("[0-9]*") if path.is_dir())
     else:
         taxonomy_dir = root / args.taxonomy
         if not taxonomy_dir.is_dir():
@@ -181,19 +261,33 @@ def collect_scene_groups(args: argparse.Namespace) -> tuple[list[SceneGroup], in
         taxonomy_dirs = [taxonomy_dir]
 
     grouped: dict[str, list[Path]] = {}
+    isolated: dict[str, list[tuple[str, Path]]] = {}
     for taxonomy_dir in taxonomy_dirs:
-        for scene_dir in sorted(taxonomy_dir.glob("scene_*")):
-            if scene_dir.is_dir() and any(scene_dir.glob("*.npy")):
-                grouped.setdefault(scene_dir.name, []).append(scene_dir)
+        for directory in sorted(taxonomy_dir.iterdir()):
+            if not directory.is_dir():
+                continue
+            if directory.name.startswith("scene_"):
+                if any(directory.glob("*.npy")):
+                    grouped.setdefault(directory.name, []).append(directory)
+            elif fnmatch.fnmatch(directory.name, getattr(args, "object", "*")):
+                for sample in sorted(directory.rglob("*.npy")):
+                    # Include the scale filename so different physical scales
+                    # are never combined into the same displayed object.
+                    name = str(sample.relative_to(taxonomy_dir).with_suffix(""))
+                    isolated.setdefault(name, []).append((taxonomy_dir.name, sample))
     scene_groups = [
         SceneGroup(name=name, directories=directories)
         for name, directories in sorted(grouped.items())
-    ]
+    ] + [SceneGroup(name=name, directories=[], samples=samples)
+         for name, samples in sorted(isolated.items())]
     if args.scene:
-        requested = _scene_selector(args.scene)
-        scene_groups = [group for group in scene_groups if group.name == requested]
+        requested = args.scene
+        names = {requested, _scene_selector(requested)}
+        if requested.isdigit():
+            names.add(f"scene_{int(requested):04d}")
+        scene_groups = [group for group in scene_groups if group.name in names]
         if not scene_groups:
-            available = ", ".join(sorted(grouped)) or "<none>"
+            available = ", ".join(sorted(grouped)[:20]) or "<none>"
             raise FileNotFoundError(
                 f"Scene {requested!r} does not exist below {root}. "
                 f"Available scenes: {available}"
@@ -247,9 +341,11 @@ def _farthest_point_downsample(
 
 
 def _downsample_per_target(
-    records: list[GraspRecord], max_grasps: int, seed: int
+    records: list[GraspRecord], max_grasps: int, seed: int, sampling: str = "fps"
 ) -> list[GraspRecord]:
-    """Run FPS independently for every target object in the scene."""
+    """Sample independently for every target object in the scene."""
+    if sampling not in ("fps", "random"):
+        raise ValueError(f"Unknown sampling method: {sampling}")
     if max_grasps <= 0:
         return records
 
@@ -259,64 +355,77 @@ def _downsample_per_target(
 
     sampled: list[GraspRecord] = []
     for target_index, target_name in enumerate(sorted(grouped)):
-        sampled.extend(
-            _farthest_point_downsample(
-                grouped[target_name], max_grasps, seed + target_index
+        candidates = grouped[target_name]
+        if sampling == "random" and len(candidates) > max_grasps:
+            indices = np.random.default_rng(seed + target_index).choice(
+                len(candidates), size=max_grasps, replace=False
             )
-        )
+            sampled.extend(candidates[int(index)] for index in indices)
+        else:
+            sampled.extend(_farthest_point_downsample(
+                candidates, max_grasps, seed + target_index
+            ))
     return sampled
 
 
 def load_scene_data(
-    scene_group: SceneGroup, max_grasps: int, sample_seed: int = 12
+    scene_group: SceneGroup, max_grasps: int, sample_seed: int = 12,
+    sampling: str = "fps",
 ) -> SceneData:
     records: list[GraspRecord] = []
     scene_path: Path | None = None
 
-    for scene_dir in scene_group.directories:
-        taxonomy = scene_dir.parent.name
-        for sample_path in sorted(scene_dir.glob("*.npy")):
-            sample = np.load(sample_path, allow_pickle=True).item()
-            if "scene_path" not in sample:
-                raise KeyError(f"{sample_path} does not contain scene_path")
-            this_scene_path = _resolve_scene_path(
-                str(sample["scene_path"]), sample_path
-            )
-            if scene_path is None:
-                scene_path = this_scene_path
+    samples = scene_group.samples
+    if samples is None:
+        samples = [(directory.parent.name, path)
+                   for directory in scene_group.directories
+                   for path in sorted(directory.glob("*.npy"))]
+    for taxonomy, sample_path in samples:
+        sample = np.load(sample_path, allow_pickle=True).item()
+        if "scene_path" not in sample:
+            raise KeyError(f"{sample_path} does not contain scene_path")
+        this_scene_path = _resolve_scene_path(
+            str(sample["scene_path"]), sample_path
+        )
+        if scene_path is None:
+            scene_path = this_scene_path
 
-            arrays: dict[str, np.ndarray] = {}
-            for phase in PHASES:
-                key = f"{phase}_qpos"
-                if key not in sample:
-                    raise KeyError(f"{sample_path} does not contain {key}")
-                value = np.asarray(sample[key], dtype=float)
-                if value.ndim == 1:
-                    value = value[None]
-                arrays[phase] = value
+        arrays: dict[str, np.ndarray] = {}
+        for phase in PHASES:
+            key = f"{phase}_qpos"
+            if key not in sample:
+                raise KeyError(f"{sample_path} does not contain {key}")
+            value = np.asarray(sample[key], dtype=float)
+            if value.ndim == 1:
+                value = value[None]
+            arrays[phase] = value
 
-            count = min(len(arrays[phase]) for phase in PHASES)
-            target_name = str(sample.get("target_name", sample_path.stem))
-            source_indices = np.asarray(
-                sample.get("source_indices", np.arange(count)), dtype=int
-            ).reshape(-1)
-            for index in range(count):
-                records.append(
-                    GraspRecord(
-                        taxonomy=taxonomy,
-                        target_name=target_name,
-                        source_path=sample_path,
-                        source_index=(
-                            int(source_indices[index])
-                            if index < len(source_indices)
-                            else index
-                        ),
-                        qposes={
-                            phase: arrays[phase][index].copy() for phase in PHASES
-                        },
-                    )
+        shapes = [arrays[phase].shape for phase in PHASES]
+        if (any(value.ndim != 2 or value.shape[1] != 29 for value in arrays.values())
+                or len(set(shapes)) != 1
+                or any(not np.isfinite(value).all() for value in arrays.values())):
+            raise ValueError(f"Invalid or mismatched grasp phases in {sample_path}: {shapes}")
+        count = len(arrays["grasp"])
+        target_name = str(sample.get("target_name", sample_path.stem))
+        source_indices = np.asarray(
+            sample.get("source_indices", np.arange(count)), dtype=int
+        ).reshape(-1)
+        for index in range(count):
+            records.append(
+                GraspRecord(
+                    taxonomy=taxonomy,
+                    target_name=target_name,
+                    source_path=sample_path,
+                    source_index=(
+                        int(source_indices[index])
+                        if index < len(source_indices)
+                        else index
+                    ),
+                    qposes={
+                        phase: arrays[phase][index].copy() for phase in PHASES
+                    },
                 )
-
+            )
     if scene_path is None:
         raise ValueError(f"No grasp files found for {scene_group.name}")
     if not records:
@@ -326,7 +435,7 @@ def load_scene_data(
     except ValueError:
         scene_number = 0
     records = _downsample_per_target(
-        records, max_grasps, sample_seed + scene_number
+        records, max_grasps, sample_seed + scene_number, sampling
     )
 
     return SceneData(
@@ -419,7 +528,7 @@ class AllGraspsModel:
         if visual_geoms and delete_collisions:
             for geom in geoms:
                 if geom not in visual_geoms:
-                    geom.delete()
+                    delete_spec_element(child_spec, geom)
         for geom in child_spec.geoms:
             geom.contype = 0
             geom.conaffinity = 0
@@ -438,7 +547,7 @@ class AllGraspsModel:
         child_spec.meshdir = self.spec.meshdir
         self._prepare_visual_geoms(child_spec, delete_collisions=False)
         for actuator in list(child_spec.actuators):
-            actuator.delete()
+            delete_spec_element(child_spec, actuator)
 
         frame = self.spec.worldbody.add_frame()
         child_world = frame.attach_body(child_spec.worldbody, f"scene-{name}-", "")
@@ -468,9 +577,12 @@ class AllGraspsModel:
         child_spec = mujoco.MjSpec.from_file(hand_xml)
         self._absolute_mesh_paths(child_spec, hand_xml)
         child_spec.meshdir = self.spec.meshdir
+        # Hands are visual-only; the scene owns the global solver options.
+        child_spec.option.cone = self.spec.option.cone
+        child_spec.option.impratio = self.spec.option.impratio
         joint_info = [(joint.name, _qpos_width(joint.type)) for joint in child_spec.joints]
         for actuator in list(child_spec.actuators):
-            actuator.delete()
+            delete_spec_element(child_spec, actuator)
         self._prepare_visual_geoms(child_spec, delete_collisions=True)
         rgba = [float(color[0]), float(color[1]), float(color[2]), alpha]
         for material in child_spec.materials:
@@ -528,6 +640,154 @@ def _print_scene_summary(scene: SceneData, model: AllGraspsModel) -> None:
     print(f"  {count_text}", flush=True)
 
 
+class ContactOverlay:
+    """Show real target contacts against the original taxonomy's body rules."""
+
+    def __init__(self, scene: SceneData, model: AllGraspsModel, hand_xml: str):
+        from dexonomy.util.taxonomy_contacts import ContactReplay, ContactRules
+
+        self.scene, self.visual = scene, model
+        self.rules = ContactRules.load(REPO_ROOT / "assets/hand/shadow/init_tmpl")
+        self.replay = ContactReplay(scene.scene_cfg, hand_xml, self.rules, distance=.002)
+        self.points = []
+        self.summaries = []
+        targets = {record.target_name for record in scene.grasps}
+        self.focus_center = np.mean([np.asarray(scene.scene_cfg["scene"][target]["pose"][:3])
+                                     for target in targets], axis=0)
+        self.focus_center[2] = max(float(self.focus_center[2]), .05)
+
+    @staticmethod
+    def missing_group_gap(replay, names: list[str]) -> dict:
+        """Nearest collision surfaces for a missing group, independent of margin."""
+        model, data = replay.model, replay.data
+        collision = (model.geom_contype != 0) | (model.geom_conaffinity != 0)
+        target_geoms = np.flatnonzero(replay.target & collision)
+        hand_bodies = {model.body("hand-" + name).id for name in names}
+        hand_geoms = np.flatnonzero(np.isin(replay.geom_body, list(hand_bodies)) & collision)
+        best, segment, nearest = np.inf, None, None
+        for hand in hand_geoms:
+            for target in target_geoms:
+                endpoints = np.zeros(6)
+                distance = mujoco.mj_geomDistance(model, data, int(hand), int(target), 1., endpoints)
+                if distance < best and np.any(endpoints):
+                    best, segment = float(distance), endpoints.tolist()
+                    nearest = model.body(int(replay.geom_body[hand])).name.removeprefix("hand-")
+        return {"bodies":names, "nearest_body":nearest,
+                "distance_m":best if np.isfinite(best) else None, "segment_m":segment}
+
+    def update(self, phase: str) -> None:
+        self.points, self.summaries = [], []
+        model = self.visual.model
+        for index, record in enumerate(self.scene.grasps):
+            taxonomy = self.rules.names.index(record.taxonomy)
+            self.replay.set_target(record.target_name)
+            result = self.replay.query(record.qposes[phase], taxonomy, diagnostic=False)
+            permitted = set(self.rules.templates[taxonomy]["hand_cbody"])
+            missing_groups = [group for i,group in enumerate(self.rules.templates[taxonomy]["required_cbody"])
+                              if result["missing"] & (1 << i)]
+            missing_bodies = {name for group in missing_groups for name in group}
+            actual, extra = set(), set()
+            descriptions = []
+            for contact in self.replay.data.contact:
+                first, second = int(contact.geom1), int(contact.geom2)
+                if self.replay.geom_hand_bits[first] and self.replay.target[second]:
+                    hand_geom = first
+                elif self.replay.geom_hand_bits[second] and self.replay.target[first]:
+                    hand_geom = second
+                else:
+                    continue
+                distance = float(contact.dist)
+                if distance > self.replay.distance:
+                    continue
+                body = self.replay.model.body(int(self.replay.geom_body[hand_geom])).name.removeprefix("hand-")
+                unexpected = body not in permitted
+                actual.add(body)
+                if unexpected:
+                    extra.add(body)
+                    descriptions.append(f"{body.removeprefix('rh_')}: {distance*1000:.2f} mm")
+                color = [1., .12, .12, 1.] if unexpected else [.05, .85, .40, 1.]
+                self.points.append((np.asarray(contact.pos).copy(), color))
+            observed_mask = self.rules.body_mask(actual)
+            if observed_mask != result["bodies"]:
+                raise RuntimeError("Contact overlay and replay classification disagree")
+            prefix = f"grasp-{index:05d}-"
+            for geom_id in range(model.ngeom):
+                body_name = model.body(int(model.geom_bodyid[geom_id])).name
+                if not body_name.startswith(prefix):
+                    continue
+                name = body_name.removeprefix(prefix)
+                model.geom_matid[geom_id] = -1
+                model.geom_rgba[geom_id] = (
+                    [1., .77, .08, .95] if name in missing_bodies else
+                    [1., .18, .13, .95] if name in extra else
+                    [.13, .65, .43, .7] if name in actual else [.72, .77, .82, .40]
+                )
+            self.summaries.append({
+                "taxonomy": record.taxonomy, "target": record.target_name,
+                "allowed_bodies": sorted(permitted), "actual_bodies": sorted(actual),
+                "extra_bodies": sorted(extra), "extra_contact_distances": descriptions,
+                "missing_required_groups": missing_groups,
+                "missing_group_gaps": [self.missing_group_gap(self.replay, group) for group in missing_groups],
+                "matching_taxonomies": [name for i,name in enumerate(self.rules.names)
+                                         if result["matches"] & (1 << i)],
+            })
+
+    def append_geoms(self, scene: mujoco.MjvScene) -> None:
+        for position, color in self.points:
+            if scene.ngeom >= scene.maxgeom:
+                break
+            geom = scene.geoms[scene.ngeom]
+            mujoco.mjv_initGeom(geom, mujoco.mjtGeom.mjGEOM_SPHERE,
+                               np.array([.0035, .0035, .0035]), position,
+                               np.eye(3).ravel(), np.asarray(color, dtype=np.float32))
+            geom.category = mujoco.mjtCatBit.mjCAT_DECOR
+            scene.ngeom += 1
+
+    def viewer_text(self) -> str:
+        lines = ["TARGET CONTACT AUDIT (<= 2 mm)",
+                 "RED: extra body/contact | GREEN: allowed contact",
+                 "YELLOW: missing required contact group",
+                 "Contact markers enlarged for visibility", ""]
+        for item in self.summaries[:4]:
+            lines.append(f"{item['taxonomy']} | object {item['target']}")
+            lines.append("Allowed: " + ", ".join(name.removeprefix('rh_') for name in item['allowed_bodies']))
+            lines.append("Extra: " + ("; ".join(item['extra_contact_distances']) or "none"))
+            for gap in item["missing_group_gaps"]:
+                group = " or ".join(name.removeprefix('rh_') for name in gap['bodies'])
+                distance = gap['distance_m']
+                value = f"{distance*1000:.6f} mm" if distance is not None else "unavailable"
+                lines.append(f"Missing: {group} | nearest gap {value}")
+        lines.append("Left/Right: example | H: hide hands | Q: exit")
+        return "\n".join(lines)
+
+
+def render_scene(scene: SceneData, args: argparse.Namespace) -> None:
+    import imageio.v3 as iio
+
+    visual = AllGraspsModel(scene, args.hand_xml, args.hand_alpha)
+    visual.set_phase(args.phase)
+    overlay = ContactOverlay(scene, visual, args.hand_xml) if args.show_contacts else None
+    if overlay:
+        overlay.update(args.phase)
+    visual.model.vis.global_.offwidth = 1200
+    visual.model.vis.global_.offheight = 900
+    camera = mujoco.MjvCamera()
+    mujoco.mjv_defaultCamera(camera)
+    camera.lookat[:] = overlay.focus_center if overlay else visual.center
+    camera.distance, camera.azimuth, camera.elevation = args.distance, args.azimuth, args.elevation
+    with mujoco.Renderer(visual.model, height=900, width=1200) as renderer:
+        renderer.update_scene(visual.data, camera=camera)
+        if overlay:
+            overlay.append_geoms(renderer.scene)
+        frame = renderer.render()
+    args.render_dir.mkdir(parents=True, exist_ok=True)
+    destination = args.render_dir / (scene.name.replace("/", "__") + ".png")
+    iio.imwrite(destination, frame)
+    if overlay:
+        destination.with_suffix(".json").write_text(json.dumps(overlay.summaries, indent=2) + "\n")
+    print(f"Rendered {destination}", flush=True)
+
+
 def show_scene(
     scene: SceneData,
     display_index: int,
@@ -541,6 +801,9 @@ def show_scene(
     all_grasps = AllGraspsModel(scene, args.hand_xml, args.hand_alpha)
     all_grasps.set_phase(args.phase)
     _print_scene_summary(scene, all_grasps)
+    overlay = ContactOverlay(scene, all_grasps, args.hand_xml) if args.show_contacts else None
+    if overlay:
+        overlay.update(args.phase)
 
     state = {
         "scene_delta": 0,
@@ -570,13 +833,16 @@ def show_scene(
         all_grasps.model,
         all_grasps.data,
         key_callback=on_key,
-        show_left_ui=True,
+        show_left_ui=not args.show_contacts,
         show_right_ui=False,
     ) as viewer:
-        viewer.cam.lookat[:] = all_grasps.center
+        viewer.cam.lookat[:] = overlay.focus_center if overlay else all_grasps.center
         viewer.cam.distance = args.distance
         viewer.cam.azimuth = args.azimuth
         viewer.cam.elevation = args.elevation
+        if overlay:
+            overlay.append_geoms(viewer.user_scn)
+            viewer.set_texts((None, None, overlay.viewer_text(), ""))
 
         while viewer.is_running():
             if state["quit"]:
@@ -585,6 +851,11 @@ def show_scene(
                 return int(state["scene_delta"]), False
             if state["phase"] != all_grasps.phase:
                 all_grasps.set_phase(str(state["phase"]))
+                if overlay:
+                    overlay.update(all_grasps.phase)
+                    viewer.user_scn.ngeom = 0
+                    overlay.append_geoms(viewer.user_scn)
+                    viewer.set_texts((None, None, overlay.viewer_text(), ""))
                 print(f"  phase: {all_grasps.phase}", flush=True)
             if state["toggle_hands"]:
                 state["toggle_hands"] = False
@@ -604,20 +875,36 @@ def main() -> int:
         print("--hand-alpha must be between 0 and 1", file=sys.stderr)
         return 2
 
+    if args.gui:
+        try:
+            configure_display(args.display)
+            if __package__:
+                from .grasp_viewer_panel import launch_panel
+            else:
+                from grasp_viewer_panel import launch_panel
+            return launch_panel(args, collect_scene_groups)
+        except (ImportError, RuntimeError) as exc:
+            print(f"Cannot open viewer panel: {exc}", file=sys.stderr)
+            return 1
+
     try:
         scene_groups, total = collect_scene_groups(args)
     except (FileNotFoundError, ValueError) as exc:
         print(exc, file=sys.stderr)
         return 1
     if not scene_groups:
-        print("No matching clutter scenes found.", file=sys.stderr)
+        print("No matching grasp scenes or object scales found.", file=sys.stderr)
         return 1
 
     print(f"Found {total} matching scenes; selected {len(scene_groups)}.")
+    if args.render_dir:
+        for group in scene_groups:
+            render_scene(load_scene_data(group, args.max_grasps, args.sample_seed, args.sampling), args)
+        return 0
     if args.check:
         for scene_group in scene_groups:
             scene = load_scene_data(
-                scene_group, args.max_grasps, args.sample_seed
+                scene_group, args.max_grasps, args.sample_seed, args.sampling
             )
             model = AllGraspsModel(scene, args.hand_xml, args.hand_alpha)
             model.set_phase(args.phase)
@@ -625,21 +912,26 @@ def main() -> int:
         print("Validation passed.")
         return 0
 
+    try:
+        configure_display(args.display)
+    except RuntimeError as exc:
+        print(exc, file=sys.stderr)
+        return 1
     print("Keys: 1 pregrasp | 2 grasp | 3 squeeze | H show/hide hands")
     print("      Right/D next scene | Left/A previous scene | Q/Esc quit")
     index = 0
     while 0 <= index < len(scene_groups):
         try:
             scene = load_scene_data(
-                scene_groups[index], args.max_grasps, args.sample_seed
+                scene_groups[index], args.max_grasps, args.sample_seed, args.sampling
             )
             delta, should_quit = show_scene(scene, index, len(scene_groups), args)
         except Exception as exc:
             print(
-                f"Skip {scene_groups[index].name}: {type(exc).__name__}: {exc}",
+                f"Cannot display {scene_groups[index].name}: {type(exc).__name__}: {exc}",
                 file=sys.stderr,
             )
-            delta, should_quit = 1, False
+            return 1
         if should_quit:
             break
         index = max(0, index + delta)

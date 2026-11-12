@@ -15,6 +15,17 @@ RUN apt-get update \
         libgl1 \
         libglib2.0-0 \
         libx11-6 \
+        libdbus-1-3 \
+        libxkbcommon-x11-0 \
+        libxcb-cursor0 \
+        libxcb-icccm4 \
+        libxcb-keysyms1 \
+        libxcb-render-util0 \
+        libxcb-xinerama0 \
+        libxcb-shape0 \
+        fontconfig \
+        fonts-dejavu-core \
+        fonts-noto-cjk \
         git \
         curl \
         openssh-client \
@@ -30,6 +41,6 @@ COPY pyproject.toml README.md ./
 COPY dexonomy ./dexonomy
 COPY assets/hand ./assets/hand
 COPY third_party ./third_party
-RUN pip install --no-cache-dir -e .
+RUN pip install --no-cache-dir -e '.[viewer]'
 
 CMD ["bash"]

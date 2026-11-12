@@ -12,6 +12,9 @@ __pycache__
 data
 assets/object
 output*
+analysis
+visualizations
+reports
 debug*
 MUJOCO_LOG.TXT
 
